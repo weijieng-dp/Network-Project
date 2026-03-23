@@ -1,0 +1,23 @@
+{
+  "name": "trading-platform",
+  "version": "1.0.0",
+  "builtin-baseline": "7e19f3c64cb636ee21f41bfe8558a6dfaae6236f",
+
+  "dependencies": [
+    "stb",
+    "glew",
+    "glfw3",
+    {
+      "name": "imgui",
+      "features": [ "opengl3-binding", "glfw-binding", "docking-experimental" ]
+    },
+    "glm",
+    "implot",
+    "rapidjson"
+  ],
+  "overrides":[
+    { "name": "imgui", "version": "1.91.9#0" },
+    { "name": "rapidjson", "version": "1.1.0-3#0" }
+  ]
+
+}
