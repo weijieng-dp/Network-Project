@@ -113,112 +113,13 @@ prior written consent of DigiPen Institute of Technology is prohibited.
 #include <set>
 #include <random>
 #include <cmath>
-
-/*--------------------------------------------------------------------------
- * Protocol command IDs
- *--------------------------------------------------------------------------*/
-enum CmdID : uint8_t {
-    // Client -> Server
-    CMD_LOGIN         = 0x01, CMD_LOGOUT        = 0x02,
-    CMD_PLACE_ORDER   = 0x03, CMD_CANCEL_ORDER  = 0x04,
-    CMD_QUERY_MARKET  = 0x05, CMD_QUERY_ACCOUNT = 0x06,
-    CMD_QUERY_ORDERS  = 0x07, CMD_QUERY_TRADES  = 0x08,
-    CMD_SUB_MARKET    = 0x09,
-    CMD_QUERY_HISTORY = 0x0A,
-    CMD_CRISIS        = 0x0B,
-    CMD_STOP_ORDER    = 0x0C,   // stop-loss / take-profit
-    CMD_QUERY_PORTFOLIO = 0x0D,
-    CMD_QUERY_STOPS   = 0x0E,
-    CMD_CANCEL_STOP   = 0x0F,
-    // Server -> Client
-    CMD_LOGIN_OK      = 0x81, CMD_LOGIN_FAIL    = 0x82,
-    CMD_ORDER_ACK     = 0x83, CMD_ORDER_REJECT  = 0x84,
-    CMD_TRADE_EXEC    = 0x85, CMD_CANCEL_ACK    = 0x86,
-    CMD_CANCEL_REJECT = 0x87, CMD_MARKET_DATA   = 0x88,
-    CMD_ACCOUNT_DATA  = 0x89, CMD_SERVER_MSG    = 0x8A,
-    CMD_LOGOUT_OK     = 0x8B, CMD_ORDER_LIST    = 0x8C,
-    CMD_TRADE_LIST    = 0x8D, CMD_HISTORY_DATA  = 0x8E,
-};
+#include "../../Shared/utils.h"
 
 static const int    MAX_PAYLOAD       = 8192;   // max TCP payload bytes
 static const double PERSIST_INTERVAL  = 5.0;    // seconds between disk flushes
 static const int    WORKER_THREADS    = 20;      // pre-spawned worker pool size
 
 static const std::vector<std::string> SYMBOLS = {"AAPL","GOOGL","MSFT","TSLA","AMZN"};
-
-/*--------------------------------------------------------------------------
- * TCP framing helpers  (mirrors Assignment 4 recvExact / sendAll)
- *--------------------------------------------------------------------------*/
-
-/**
- * @brief Receive exactly 'len' bytes over TCP, handling partial reads.
- * @return true on success, false on disconnect or error.
- */
-static bool recvExact(SOCKET s, char* buf, int len) {
-    int total = 0;
-    while (total < len) {
-        int r = recv(s, buf + total, len - total, 0);
-        if (r <= 0) return false;
-        total += r;
-    }
-    return true;
-}
-
-/**
- * @brief Send all 'len' bytes over TCP, handling partial sends.
- * @return true on success, false on error.
- */
-static bool sendAll(SOCKET s, const char* buf, int len) {
-    int total = 0;
-    while (total < len) {
-        int sent = send(s, buf + total, len - total, 0);
-        if (sent == SOCKET_ERROR) return false;
-        total += sent;
-    }
-    return true;
-}
-
-/*--------------------------------------------------------------------------
- * Serialisation helpers for building payloads
- *--------------------------------------------------------------------------*/
-
-static void pushU8 (std::vector<char>& b, uint8_t  v) { b.push_back((char)v); }
-static void pushU16(std::vector<char>& b, uint16_t v) { v=htons(v);  b.insert(b.end(),(char*)&v,(char*)&v+2); }
-static void pushU32(std::vector<char>& b, uint32_t v) { v=htonl(v);  b.insert(b.end(),(char*)&v,(char*)&v+4); }
-static void pushU64(std::vector<char>& b, uint64_t v) {
-    uint32_t hi=htonl((uint32_t)(v>>32)), lo=htonl((uint32_t)(v&0xFFFFFFFF));
-    b.insert(b.end(),(char*)&hi,(char*)&hi+4); b.insert(b.end(),(char*)&lo,(char*)&lo+4);
-}
-static void pushDouble(std::vector<char>& b, double v) { uint64_t bits; memcpy(&bits,&v,8); pushU64(b,bits); }
-static void pushStr1  (std::vector<char>& b, const std::string& s) {
-    uint8_t len=(uint8_t)std::min(s.size(),(size_t)255); pushU8(b,len);
-    b.insert(b.end(),s.begin(),s.begin()+len);
-}
-
-/*--------------------------------------------------------------------------
- * Deserialisation helpers  (read from raw received payload buffer)
- *--------------------------------------------------------------------------*/
-
-static bool readU8 (const char*b,int n,int&o,uint8_t& v)  { if(o+1>n)return false; v=(uint8_t)b[o++]; return true; }
-static bool readU16(const char*b,int n,int&o,uint16_t&v)  { if(o+2>n)return false; memcpy(&v,b+o,2); v=ntohs(v); o+=2; return true; }
-static bool readU32(const char*b,int n,int&o,uint32_t&v)  { if(o+4>n)return false; memcpy(&v,b+o,4); v=ntohl(v); o+=4; return true; }
-static bool readU64(const char*b,int n,int&o,uint64_t&v)  {
-    if(o+8>n)return false; uint32_t hi,lo; memcpy(&hi,b+o,4); memcpy(&lo,b+o+4,4);
-    v=((uint64_t)ntohl(hi)<<32)|ntohl(lo); o+=8; return true;
-}
-static bool readDouble(const char*b,int n,int&o,double&v)  { uint64_t bits=0; if(!readU64(b,n,o,bits))return false; memcpy(&v,&bits,8); return true; }
-static bool readStr1  (const char*b,int n,int&o,std::string&v) {
-    uint8_t len=0; if(!readU8(b,n,o,len))return false; if(o+len>n)return false; v.assign(b+o,len); o+=len; return true;
-}
-
-/*--------------------------------------------------------------------------
- * Per-socket send mutex (must be declared before sendFrame)
- *--------------------------------------------------------------------------*/
-
-// Prevents concurrent sendFrame() calls on the same socket when
-// pushTradeExec() is called from a different worker thread.
-static std::unordered_map<SOCKET,std::shared_ptr<std::mutex>> g_sockSendMtx;
-static std::mutex g_sockSendMapMtx;
 
 /*--------------------------------------------------------------------------
  * TCP framed send: CmdID(1) + PayloadLen(2) + Payload
@@ -239,15 +140,7 @@ static bool sendFrame(SOCKET s, CmdID cmd, const std::vector<char>& payload) {
     pushU8 (frame, (uint8_t)cmd);
     pushU16(frame, len);
     frame.insert(frame.end(), payload.begin(), payload.begin()+len);
-    // Acquire per-socket send mutex
-    std::shared_ptr<std::mutex> mtx;
-    {
-        std::lock_guard<std::mutex> lk(g_sockSendMapMtx);
-        auto it = g_sockSendMtx.find(s);
-        if(it == g_sockSendMtx.end()) it = g_sockSendMtx.emplace(s, std::make_shared<std::mutex>()).first;
-        mtx = it->second;
-    }
-    std::lock_guard<std::mutex> lk(*mtx);
+
     return sendAll(s, frame.data(), (int)frame.size());
 }
 
@@ -1415,7 +1308,7 @@ static void clientSession(SOCKET sock) {
                     [&](const UdpSubscriber& sub){ return memcmp(&sub.addr,&udpSubAddr,sizeof(udpSubAddr))==0; }),
                 g_subscribers.end());
         }
-        { std::lock_guard<std::mutex> lk(g_sockSendMapMtx); g_sockSendMtx.erase(sock); }
+
         shutdown(sock, SD_BOTH);
         closesocket(sock);
         std::lock_guard<std::mutex> lk(g_printMtx);
