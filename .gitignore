@@ -26,3 +26,4 @@ Release
 *.vcxproj.filters
 src/Client/ftxui/
 trading_data/
+vcpkg/
