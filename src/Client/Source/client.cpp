@@ -69,7 +69,7 @@ prior written consent of DigiPen Institute of Technology is prohibited.
 #include <cmath>
 #include <deque>
 #include <functional>
-#include "../../Shared/utils.h"
+#include "utils.h"
 
 // FTXUI - Terminal UI library for interactive TUI
 #ifdef DrawText

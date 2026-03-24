@@ -25,12 +25,12 @@
     ListenerThread   - accept() loop; hands each TCP socket to a worker.
     WorkerThread(N)  - one per connected client; runs clientSession().
                        Handles all TCP I/O for that client.
-    UdpBroadcast     - background thread: drains g_broadcastQueue and
+    UdpBroadcast     - background thread: drains Global::broadcastQueue and
                        sendto() each market-data datagram to all registered
                        client UDP addresses.
     PersistThread    - flushes accounts.dat + trades.dat every 5 seconds
                        and on clean shutdown.
-    ExchangeMutex    - single std::mutex (g_exMtx) protects the order book,
+    ExchangeMutex    - single std::mutex (Global::exMtx) protects the order book,
                        account map, and trade log.  Worker threads contend on
                        this when placing orders; contention is brief.
 
@@ -113,7 +113,10 @@ prior written consent of DigiPen Institute of Technology is prohibited.
 #include <set>
 #include <random>
 #include <cmath>
-#include "../../Shared/utils.h"
+
+#include "utils.h"
+#include "types.h"
+#include "global.h"
 
 static const int    MAX_PAYLOAD       = 8192;   // max TCP payload bytes
 static const double PERSIST_INTERVAL  = 5.0;    // seconds between disk flushes
@@ -149,47 +152,6 @@ static bool sendServerMsg(SOCKET s, const std::string& msg) {
     return sendFrame(s, CMD_SERVER_MSG, p);
 }
 
-/*--------------------------------------------------------------------------
- * Exchange data structures
- *--------------------------------------------------------------------------*/
-
-struct Order {
-    uint64_t    orderId=0;
-    std::string username, symbol;
-    char        side='B';
-    uint32_t    qty=0, origQty=0;
-    double      price=0.0;
-    std::chrono::steady_clock::time_point ts;
-};
-
-struct Trade {
-    uint64_t    tradeId=0;
-    std::string symbol, buyUser, sellUser, datetime;
-    uint32_t    qty=0;
-    double      price=0.0;
-};
-
-struct TradePoint { double price; uint32_t qty; std::string datetime; };
-
-/** Price/time-priority order book for one symbol. */
-struct OrderBook {
-    std::map<double,std::map<uint64_t,Order>,std::greater<double>> bids; // highest first
-    std::map<double,std::map<uint64_t,Order>>                       asks; // lowest first
-    double   lastPrice=0.0;
-    uint32_t volume=0;
-    double   mmVolatility=1.0;  // rolling volatility for MM spread calculation
-    std::vector<TradePoint> tradeLog;  // historical trade prices for charting
-};
-
-struct Account {
-    std::string                     username;
-    std::string                     passwordHash;   // stored hash of password
-    double                          cash=100000.0;
-    std::map<std::string,uint32_t>  holdings;
-    std::map<std::string,double>    avgCost;   // average cost basis per symbol
-    std::vector<Trade>              trades;
-    std::map<uint64_t,Order>        openOrders;
-};
 
 /**
  * @brief Simple hash function for password storage.
@@ -205,55 +167,55 @@ static std::string hashPassword(const std::string& user, const std::string& pass
     return ss.str();
 }
 
-/*--------------------------------------------------------------------------
- * Global exchange state  (protected by g_exMtx)
- *--------------------------------------------------------------------------*/
-
-static std::mutex g_exMtx;   // guards all exchange state below
-
-static std::unordered_map<std::string,Account>   g_accounts;
-static std::unordered_map<std::string,OrderBook> g_books;
-static std::vector<Trade>                         g_allTrades;
-static std::unordered_map<uint64_t,Order>         g_liveOrders;
-static std::atomic<uint64_t> g_nextOrderId{1}, g_nextTradeId{1};
-
-// Map username -> TCP socket (for pushing TRADE_EXEC to counterparty)
-static std::unordered_map<std::string,SOCKET> g_userSockets;
-static std::mutex g_userSockMtx;
-
-/*--------------------------------------------------------------------------
- * UDP broadcast state
- *--------------------------------------------------------------------------*/
-
-static SOCKET g_udpSocket = INVALID_SOCKET;
-static std::atomic<uint32_t> g_udpSeq{1};
-
-struct UdpSubscriber { sockaddr_in addr; };
-static std::mutex              g_subMtx;
-static std::vector<UdpSubscriber> g_subscribers;
-
-struct BroadcastItem { std::vector<char> payload; };
-static std::mutex              g_bcastMtx;
-static std::condition_variable g_bcastCV;
-static std::deque<BroadcastItem> g_bcastQueue;
-
-/*--------------------------------------------------------------------------
- * Persistence path + print mutex
- *--------------------------------------------------------------------------*/
-
-static std::string g_persistPath;
-static std::mutex  g_printMtx;
-static std::atomic<bool> g_running{true};
+///*--------------------------------------------------------------------------
+// * Global exchange state  (protected by Global::exMtx)
+// *--------------------------------------------------------------------------*/
+//
+//static std::mutex Global::exMtx;   // guards all exchange state below
+//
+//static std::unordered_map<std::string,Account>   Global::accounts;
+//static std::unordered_map<std::string,OrderBook> Global::books;
+//static std::vector<Trade>                         Global::allTrades;
+//static std::unordered_map<uint64_t,Order>         Global::liveOrders;
+//static std::atomic<uint64_t> Global::nextOrderId{1}, Global::nextTradeId{1};
+//
+//// Map username -> TCP socket (for pushing TRADE_EXEC to counterparty)
+//static std::unordered_map<std::string,SOCKET> Global::userSockets;
+//static std::mutex Global::userSockMtx;
+//
+///*--------------------------------------------------------------------------
+// * UDP broadcast state
+// *--------------------------------------------------------------------------*/
+//
+//static SOCKET Global::udpSocket = INVALID_SOCKET;
+//static std::atomic<uint32_t> Global::udpSeq{1};
+//
+//struct UdpSubscriber { sockaddr_in addr; };
+//static std::mutex              Global::subMtx;
+//static std::vector<UdpSubscriber> Global::subscribers;
+//
+//struct BroadcastItem { std::vector<char> payload; };
+//static std::mutex              Global::bcastMtx;
+//static std::condition_variable Global::bcastCV;
+//static std::deque<BroadcastItem> Global::bcastQueue;
+//
+///*--------------------------------------------------------------------------
+// * Persistence path + print mutex
+// *--------------------------------------------------------------------------*/
+//
+//static std::string Global::persistPath;
+//static std::mutex  Global::printMtx;
+//static std::atomic<bool> Global::running{true};
 
 /*--------------------------------------------------------------------------
  * Broadcast server message to ALL connected clients
  *--------------------------------------------------------------------------*/
 static void broadcastServerMsg(const std::string& msg) {
-    std::lock_guard<std::mutex> lk(g_userSockMtx);
-    for (auto& [uname, sock] : g_userSockets) {
+    std::lock_guard<std::mutex> lk(Global::userSockMtx);
+    for (auto& [uname, sock] : Global::userSockets) {
         sendServerMsg(sock, msg);
     }
-    std::lock_guard<std::mutex> plk(g_printMtx);
+    std::lock_guard<std::mutex> plk(Global::printMtx);
     std::cout << "[BROADCAST] " << msg << "\n";
 }
 
@@ -280,18 +242,9 @@ static const std::unordered_map<std::string, double> CRISIS_VULNERABILITY = {
     {"AAPL", 0.7}, {"GOOGL", 0.8}, {"MSFT", 0.6}, {"TSLA", 1.4}, {"AMZN", 1.0}
 };
 
-/*--------------------------------------------------------------------------
- * Conditional orders (stop-loss / take-profit)
- *--------------------------------------------------------------------------*/
-struct ConditionalOrder {
-    uint64_t    id;
-    std::string username, symbol;
-    char        type;       // 'S' = stop-loss, 'T' = take-profit
-    uint32_t    qty;
-    double      triggerPrice;
-};
-static std::vector<ConditionalOrder> g_conditionalOrders;
-static std::atomic<uint64_t> g_nextCondId{1};
+
+//static std::vector<ConditionalOrder> Global::conditionalOrders;
+//static std::atomic<uint64_t> Global::nextCondId{1};
 
 /*--------------------------------------------------------------------------
  * Utility
@@ -309,71 +262,71 @@ static std::string nowString() {
 static void persistData() {
     std::string logMsg;
     {
-        std::lock_guard<std::mutex> lk(g_exMtx);
+        std::lock_guard<std::mutex> lk(Global::exMtx);
         // --- accounts.dat: cash + holdings ---
-        std::ofstream fa(g_persistPath+"\\accounts.dat",std::ios::trunc);
-        for(auto&[u,acc]:g_accounts){
+        std::ofstream fa(Global::persistPath+"\\accounts.dat",std::ios::trunc);
+        for(auto&[u,acc]:Global::accounts){
             fa<<"A "<<u<<" "<<std::fixed<<std::setprecision(6)<<acc.cash<<" "<<acc.passwordHash<<"\n";
             for(auto&[sym,qty]:acc.holdings) if(qty>0) fa<<"H "<<sym<<" "<<qty<<"\n";
         }
         // --- trades.dat: trade log ---
-        std::ofstream ft(g_persistPath+"\\trades.dat",std::ios::trunc);
-        for(auto&tr:g_allTrades)
+        std::ofstream ft(Global::persistPath+"\\trades.dat",std::ios::trunc);
+        for(auto&tr:Global::allTrades)
             ft<<tr.tradeId<<" "<<tr.symbol<<" "<<tr.qty<<" "
               <<std::fixed<<std::setprecision(6)<<tr.price<<" "
               <<tr.buyUser<<" "<<tr.sellUser<<" "<<tr.datetime<<"\n";
         // --- orders.dat: all resting orders in the book ---
-        std::ofstream fo(g_persistPath+"\\orders.dat",std::ios::trunc);
-        for(auto&[oid,ord]:g_liveOrders){
+        std::ofstream fo(Global::persistPath+"\\orders.dat",std::ios::trunc);
+        for(auto&[oid,ord]:Global::liveOrders){
             fo<<"O "<<oid<<" "<<ord.username<<" "<<ord.side<<" "
               <<ord.symbol<<" "<<ord.qty<<" "<<ord.origQty<<" "
               <<std::fixed<<std::setprecision(6)<<ord.price<<"\n";
         }
         // --- history.dat: price history for charting ---
-        std::ofstream fh(g_persistPath+"\\history.dat",std::ios::trunc);
-        for(auto&[sym,book]:g_books){
+        std::ofstream fh(Global::persistPath+"\\history.dat",std::ios::trunc);
+        for(auto&[sym,book]:Global::books){
             for(auto&tp:book.tradeLog)
                 fh<<sym<<" "<<std::fixed<<std::setprecision(6)<<tp.price<<" "<<tp.qty<<" "<<tp.datetime<<"\n";
         }
-        logMsg = "["+nowString()+"] Persisted "+std::to_string(g_accounts.size())+" accounts, "
-                +std::to_string(g_allTrades.size())+" trades, "
-                +std::to_string(g_liveOrders.size())+" orders.";
+        logMsg = "["+nowString()+"] Persisted "+std::to_string(Global::accounts.size())+" accounts, "
+                +std::to_string(Global::allTrades.size())+" trades, "
+                +std::to_string(Global::liveOrders.size())+" orders.";
     }
-    // Print AFTER releasing g_exMtx to avoid double-lock with g_printMtx
-    std::lock_guard<std::mutex> plk(g_printMtx);
+    // Print AFTER releasing Global::exMtx to avoid double-lock with Global::printMtx
+    std::lock_guard<std::mutex> plk(Global::printMtx);
     std::cout<<logMsg<<"\n";
 }
 
 static void loadData() {
     // --- Load accounts ---
-    std::ifstream fa(g_persistPath+"\\accounts.dat");
+    std::ifstream fa(Global::persistPath+"\\accounts.dat");
     if(fa.is_open()){
         std::string line,curUser;
         while(std::getline(fa,line)){
             if(line.empty()) continue;
             std::istringstream ss(line); char tag; ss>>tag;
-            if(tag=='A'){ std::string u,ph; double c; ss>>u>>c>>ph; g_accounts[u].username=u; g_accounts[u].cash=c; g_accounts[u].passwordHash=ph; curUser=u; }
-            else if(tag=='H'&&!curUser.empty()){ std::string sym; uint32_t qty; ss>>sym>>qty; g_accounts[curUser].holdings[sym]=qty; }
+            if(tag=='A'){ std::string u,ph; double c; ss>>u>>c>>ph; Global::accounts[u].username=u; Global::accounts[u].cash=c; Global::accounts[u].passwordHash=ph; curUser=u; }
+            else if(tag=='H'&&!curUser.empty()){ std::string sym; uint32_t qty; ss>>sym>>qty; Global::accounts[curUser].holdings[sym]=qty; }
         }
-        std::cout<<"Loaded "<<g_accounts.size()<<" accounts.\n";
+        std::cout<<"Loaded "<<Global::accounts.size()<<" accounts.\n";
     }
     // --- Load trades ---
-    std::ifstream ft(g_persistPath+"\\trades.dat");
+    std::ifstream ft(Global::persistPath+"\\trades.dat");
     if(ft.is_open()){
         Trade tr;
         while(ft>>tr.tradeId>>tr.symbol>>tr.qty>>tr.price>>tr.buyUser>>tr.sellUser>>tr.datetime){
-            g_allTrades.push_back(tr);
-            g_accounts[tr.buyUser].trades.push_back(tr);
-            g_accounts[tr.sellUser].trades.push_back(tr);
-            if(tr.tradeId>=g_nextTradeId.load()) g_nextTradeId.store(tr.tradeId+1);
+            Global::allTrades.push_back(tr);
+            Global::accounts[tr.buyUser].trades.push_back(tr);
+            Global::accounts[tr.sellUser].trades.push_back(tr);
+            if(tr.tradeId>=Global::nextTradeId.load()) Global::nextTradeId.store(tr.tradeId+1);
         }
-        std::cout<<"Loaded "<<g_allTrades.size()<<" trades.\n";
+        std::cout<<"Loaded "<<Global::allTrades.size()<<" trades.\n";
     }
     // --- Load resting orders (rebuild order book) ---
-    std::ifstream fo(g_persistPath+"\\orders.dat");
+    std::ifstream fo(Global::persistPath+"\\orders.dat");
     if(fo.is_open()){
         std::string line;
-        uint64_t maxOid = g_nextOrderId.load();
+        uint64_t maxOid = Global::nextOrderId.load();
         while(std::getline(fo,line)){
             if(line.empty()) continue;
             std::istringstream ss(line); char tag; ss>>tag;
@@ -389,28 +342,28 @@ static void loadData() {
             ord.ts=std::chrono::steady_clock::now();
 
             // Insert into the order book
-            if(side=='B') g_books[sym].bids[price][oid]=ord;
-            else          g_books[sym].asks[price][oid]=ord;
-            g_liveOrders[oid]=ord;
-            g_accounts[user].openOrders[oid]=ord;
+            if(side=='B') Global::books[sym].bids[price][oid]=ord;
+            else          Global::books[sym].asks[price][oid]=ord;
+            Global::liveOrders[oid]=ord;
+            Global::accounts[user].openOrders[oid]=ord;
 
             if(oid>=maxOid) maxOid=oid+1;
         }
-        g_nextOrderId.store(maxOid);
-        std::cout<<"Loaded "<<g_liveOrders.size()<<" resting orders.\n";
+        Global::nextOrderId.store(maxOid);
+        std::cout<<"Loaded "<<Global::liveOrders.size()<<" resting orders.\n";
     }
     // --- Load price history for charting ---
-    std::ifstream fh(g_persistPath+"\\history.dat");
+    std::ifstream fh(Global::persistPath+"\\history.dat");
     if(fh.is_open()){
         std::string sym,dt; double price; uint32_t qty;
         size_t hcount=0;
         while(fh>>sym>>price>>qty>>dt){
-            g_books[sym].tradeLog.push_back({price,qty,dt});
+            Global::books[sym].tradeLog.push_back({price,qty,dt});
             ++hcount;
         }
         std::cout<<"Loaded "<<hcount<<" price history points.\n";
     }
-    for(auto&sym:SYMBOLS) g_books[sym];
+    for(auto&sym:SYMBOLS) Global::books[sym];
 }
 
 /*--------------------------------------------------------------------------
@@ -462,17 +415,17 @@ static bool postHouseOrder(const std::string& sym, char side, double price, uint
 static void seedMarketMaker() {
     // If the EXCHANGE account was already loaded from persistence, skip seeding
     // to avoid duplicating orders and inflating the account on every restart.
-    if(g_accounts.count(HOUSE_USER)) {
+    if(Global::accounts.count(HOUSE_USER)) {
         std::cout << "[HOUSE] EXCHANGE account found in persisted data — skipping seed.\n";
         std::cout << "[HOUSE] Cash: $" << std::fixed << std::setprecision(2)
-                  << g_accounts[HOUSE_USER].cash << ", holdings: ";
-        for(auto&[sym,qty]:g_accounts[HOUSE_USER].holdings) std::cout<<sym<<"="<<qty<<" ";
+                  << Global::accounts[HOUSE_USER].cash << ", holdings: ";
+        for(auto&[sym,qty]:Global::accounts[HOUSE_USER].holdings) std::cout<<sym<<"="<<qty<<" ";
         std::cout << "\n\n";
         return;
     }
 
     // Create the house account fresh (first run only)
-    Account& house = g_accounts[HOUSE_USER];
+    Account& house = Global::accounts[HOUSE_USER];
     house.username = HOUSE_USER;
     house.cash     = HOUSE_CASH;
     for (auto& sym : SYMBOLS)
@@ -484,7 +437,7 @@ static void seedMarketMaker() {
     // Seed multi-level depth for each symbol using requoteMarketMaker logic
     for (auto& sym : SYMBOLS) {
         double refPx = REFERENCE_PRICES.count(sym) ? REFERENCE_PRICES.at(sym) : 100.0;
-        OrderBook& book = g_books[sym];
+        OrderBook& book = Global::books[sym];
         book.lastPrice = refPx;
         book.tradeLog.push_back({refPx, 0, nowString()});
 
@@ -532,11 +485,11 @@ static void seedMarketMaker() {
  * Directly inserts into the order book (no matching — the MM is passive).
  * Reserves the appropriate funds/shares from the EXCHANGE account.
  *
- * Called with g_exMtx held.
+ * Called with Global::exMtx held.
  * @return true if order was posted, false if insufficient inventory/cash.
  */
 static bool postHouseOrder(const std::string& sym, char side, double price, uint32_t qty) {
-    Account& house = g_accounts[HOUSE_USER];
+    Account& house = Global::accounts[HOUSE_USER];
 
     if(side == 'S') {
         uint32_t avail = house.holdings.count(sym) ? house.holdings[sym] : 0;
@@ -550,19 +503,19 @@ static bool postHouseOrder(const std::string& sym, char side, double price, uint
         house.cash -= cost;
     }
 
-    uint64_t oid = g_nextOrderId.fetch_add(1);
+    uint64_t oid = Global::nextOrderId.fetch_add(1);
     Order ord;
     ord.orderId = oid; ord.username = HOUSE_USER; ord.side = side;
     ord.symbol = sym; ord.qty = qty; ord.origQty = qty; ord.price = price;
     ord.ts = std::chrono::steady_clock::now();
 
-    OrderBook& book = g_books[sym];
+    OrderBook& book = Global::books[sym];
     if(side == 'B') book.bids[price][oid] = ord;
     else            book.asks[price][oid] = ord;
-    g_liveOrders[oid] = ord;
+    Global::liveOrders[oid] = ord;
     house.openOrders[oid] = ord;
 
-    { std::lock_guard<std::mutex> plk(g_printMtx);
+    { std::lock_guard<std::mutex> plk(Global::printMtx);
       std::cout << "[MM " << (side=='B'?"BID":"ASK") << "] " << sym
                 << " " << qty << " @ " << std::fixed << std::setprecision(2) << price
                 << "  (order #" << oid << ")\n"; }
@@ -578,12 +531,12 @@ static bool postHouseOrder(const std::string& sym, char side, double price, uint
  *   2. Check if a bid exists for this symbol from EXCHANGE.  If not, post one.
  *   3. Price tracks the last trade price ± half the spread (price discovery).
  *
- * Called with g_exMtx held.
+ * Called with Global::exMtx held.
  */
 static void requoteMarketMaker(const std::string& sym) {
-    if(!g_accounts.count(HOUSE_USER)) return;
-    Account& house = g_accounts[HOUSE_USER];
-    OrderBook& book = g_books[sym];
+    if(!Global::accounts.count(HOUSE_USER)) return;
+    Account& house = Global::accounts[HOUSE_USER];
+    OrderBook& book = Global::books[sym];
 
     // Midpoint tracks last trade price (price discovery)
     double mid = book.lastPrice;
@@ -598,8 +551,8 @@ static void requoteMarketMaker(const std::string& sym) {
         for(auto& [oid, ord] : lvl)
             if(ord.username == HOUSE_USER) toCancel.push_back(oid);
     for(uint64_t oid : toCancel) {
-        auto it = g_liveOrders.find(oid);
-        if(it == g_liveOrders.end()) continue;
+        auto it = Global::liveOrders.find(oid);
+        if(it == Global::liveOrders.end()) continue;
         Order& ord = it->second;
         if(ord.side == 'B') {
             house.cash += ord.price * ord.qty;
@@ -610,7 +563,7 @@ static void requoteMarketMaker(const std::string& sym) {
             book.asks[ord.price].erase(oid);
             if(book.asks[ord.price].empty()) book.asks.erase(ord.price);
         }
-        g_liveOrders.erase(oid);
+        Global::liveOrders.erase(oid);
         house.openOrders.erase(oid);
     }
 
@@ -651,11 +604,11 @@ static void requoteMarketMaker(const std::string& sym) {
  * (same inner payload as the TCP CMD_MARKET_DATA frame so clients share
  * the same parser for both channels)
  *
- * Called with g_exMtx held; enqueues to g_bcastQueue which is drained by
+ * Called with Global::exMtx held; enqueues to Global::bcastQueue which is drained by
  * the broadcast thread.
  */
 static void enqueueBroadcast(const std::string& sym) {
-    auto& book = g_books[sym];
+    auto& book = Global::books[sym];
     double bid=0, ask=0, last=book.lastPrice;
     uint32_t bidQty=0, askQty=0, vol=book.volume;
     if(!book.bids.empty()){ bid=book.bids.begin()->first; for(auto&[oid,o]:book.bids.begin()->second) bidQty+=o.qty; }
@@ -668,14 +621,14 @@ static void enqueueBroadcast(const std::string& sym) {
 
     // Full UDP datagram: Seq(4) + CmdID(1) + PayloadLen(2) + inner
     std::vector<char> dgram;
-    pushU32(dgram, g_udpSeq.fetch_add(1));
+    pushU32(dgram, Global::udpSeq.fetch_add(1));
     pushU8 (dgram, (uint8_t)CMD_MARKET_DATA);
     pushU16(dgram, (uint16_t)inner.size());
     dgram.insert(dgram.end(), inner.begin(), inner.end());
 
-    std::lock_guard<std::mutex> lk(g_bcastMtx);
-    g_bcastQueue.push_back({std::move(dgram)});
-    g_bcastCV.notify_one();
+    std::lock_guard<std::mutex> lk(Global::bcastMtx);
+    Global::bcastQueue.push_back({std::move(dgram)});
+    Global::bcastCV.notify_one();
 }
 
 /*--------------------------------------------------------------------------
@@ -685,16 +638,16 @@ static void enqueueBroadcast(const std::string& sym) {
 /**
  * @brief Send TRADE_EXEC over TCP to a user if they are currently connected.
  *
- * Called with g_exMtx held but NOT g_userSockMtx (we lock it here briefly).
+ * Called with Global::exMtx held but NOT Global::userSockMtx (we lock it here briefly).
  */
 static void pushTradeExec(const std::string& username, uint64_t orderId,
                           uint32_t fillQty, double fillPx, uint32_t remQty,
                           const std::string& sym) {
     SOCKET sock = INVALID_SOCKET;
     {
-        std::lock_guard<std::mutex> lk(g_userSockMtx);
-        auto it = g_userSockets.find(username);
-        if(it != g_userSockets.end()) sock = it->second;
+        std::lock_guard<std::mutex> lk(Global::userSockMtx);
+        auto it = Global::userSockets.find(username);
+        if(it != Global::userSockets.end()) sock = it->second;
     }
     if(sock == INVALID_SOCKET) return;
 
@@ -710,18 +663,18 @@ static void requoteMarketMaker(const std::string& sym);
 
 /**
  * @brief Record one fill, update both accounts atomically, push notifications.
- * Called from main exchange thread with g_exMtx held.
+ * Called from main exchange thread with Global::exMtx held.
  */
 static void recordTrade(const std::string& sym, uint32_t fill, double fillPx,
                         Order& buyOrd, Order& sellOrd) {
     Trade tr;
-    tr.tradeId=g_nextTradeId.fetch_add(1); tr.symbol=sym;
+    tr.tradeId=Global::nextTradeId.fetch_add(1); tr.symbol=sym;
     tr.qty=fill; tr.price=fillPx;
     tr.buyUser=buyOrd.username; tr.sellUser=sellOrd.username;
     tr.datetime=nowString();
-    g_allTrades.push_back(tr);
+    Global::allTrades.push_back(tr);
 
-    auto& book_ref = g_books[sym];
+    auto& book_ref = Global::books[sym];
     // Update MM volatility (EMA of price change magnitude)
     if (book_ref.lastPrice > 0) {
         double pctChange = std::abs(fillPx - book_ref.lastPrice) / (std::max)(book_ref.lastPrice, 0.01);
@@ -735,7 +688,7 @@ static void recordTrade(const std::string& sym, uint32_t fill, double fillPx,
     // Update buyer — cash was ALREADY reserved at limitPrice on order placement.
     // Refund the price improvement: (limitPrice - fillPx) * fill.
     // Do NOT deduct cash again.
-    auto& ba=g_accounts[buyOrd.username];
+    auto& ba=Global::accounts[buyOrd.username];
     ba.cash         += (buyOrd.price - fillPx) * fill;   // refund price improvement
     // Update average cost basis (weighted average)
     uint32_t oldQty = ba.holdings.count(sym) ? ba.holdings[sym] : 0;
@@ -750,7 +703,7 @@ static void recordTrade(const std::string& sym, uint32_t fill, double fillPx,
 
     // Update seller — shares were ALREADY reserved on order placement.
     // Do NOT deduct holdings again. Just credit cash from the sale.
-    auto& sa=g_accounts[sellOrd.username];
+    auto& sa=Global::accounts[sellOrd.username];
     sa.cash+=fillPx*fill;
     sa.trades.push_back(tr);
     if(sa.openOrders.count(sellOrd.orderId)){
@@ -759,7 +712,7 @@ static void recordTrade(const std::string& sym, uint32_t fill, double fillPx,
     }
 
     {
-        std::lock_guard<std::mutex> lk(g_printMtx);
+        std::lock_guard<std::mutex> lk(Global::printMtx);
         std::cout<<"[TRADE #"<<tr.tradeId<<"] "<<sym<<" qty="<<fill
                  <<" @"<<std::fixed<<std::setprecision(4)<<fillPx
                  <<"  buyer="<<buyOrd.username<<"  seller="<<sellOrd.username<<"\n";
@@ -777,24 +730,24 @@ static void recordTrade(const std::string& sym, uint32_t fill, double fillPx,
 
 /**
  * @brief Check and fire conditional orders (stop-loss / take-profit) for a symbol.
- * Called AFTER matchOrders + requoteMarketMaker complete. Holds g_exMtx.
+ * Called AFTER matchOrders + requoteMarketMaker complete. Holds Global::exMtx.
  */
 static void checkConditionalOrders(const std::string& sym) {
-    auto& book = g_books[sym];
+    auto& book = Global::books[sym];
     double lastPx = book.lastPrice;
     if (lastPx <= 0) return;
 
     std::vector<size_t> triggered;
-    for (size_t ci = 0; ci < g_conditionalOrders.size(); ++ci) {
-        auto& co = g_conditionalOrders[ci];
+    for (size_t ci = 0; ci < Global::conditionalOrders.size(); ++ci) {
+        auto& co = Global::conditionalOrders[ci];
         if (co.symbol != sym) continue;
         bool fire = false;
         if (co.type == 'S' && lastPx <= co.triggerPrice) fire = true;
         if (co.type == 'T' && lastPx >= co.triggerPrice) fire = true;
         if (!fire) continue;
 
-        if (!g_accounts.count(co.username)) { triggered.push_back(ci); continue; }
-        auto& acc = g_accounts[co.username];
+        if (!Global::accounts.count(co.username)) { triggered.push_back(ci); continue; }
+        auto& acc = Global::accounts[co.username];
         uint32_t avail = acc.holdings.count(sym) ? acc.holdings[sym] : 0;
         uint32_t sellQty = (std::min)(co.qty, avail);
         if (sellQty == 0) { triggered.push_back(ci); continue; }
@@ -805,7 +758,7 @@ static void checkConditionalOrders(const std::string& sym) {
         // Use best bid price for the market sell (like real platforms)
         double sellPrice = book.bids.empty() ? 0.01 : book.bids.begin()->first;
 
-        uint64_t oid = g_nextOrderId.fetch_add(1);
+        uint64_t oid = Global::nextOrderId.fetch_add(1);
         Order sord;
         sord.orderId = oid; sord.username = co.username; sord.side = 'S';
         sord.symbol = sym; sord.qty = sellQty; sord.origQty = sellQty;
@@ -818,10 +771,10 @@ static void checkConditionalOrders(const std::string& sym) {
 
         if (sord.qty > 0) {
             acc.holdings[sym] += sord.qty;
-            if (g_liveOrders.count(oid)) {
+            if (Global::liveOrders.count(oid)) {
                 book.asks[sord.price].erase(oid);
                 if (book.asks[sord.price].empty()) book.asks.erase(sord.price);
-                g_liveOrders.erase(oid);
+                Global::liveOrders.erase(oid);
             }
             acc.openOrders.erase(oid);
         }
@@ -830,9 +783,9 @@ static void checkConditionalOrders(const std::string& sym) {
         std::string typeStr = (co.type == 'S') ? "STOP-LOSS" : "TAKE-PROFIT";
         {
             SOCKET usock = INVALID_SOCKET;
-            std::lock_guard<std::mutex> lk2(g_userSockMtx);
-            auto it2 = g_userSockets.find(co.username);
-            if (it2 != g_userSockets.end()) usock = it2->second;
+            std::lock_guard<std::mutex> lk2(Global::userSockMtx);
+            auto it2 = Global::userSockets.find(co.username);
+            if (it2 != Global::userSockets.end()) usock = it2->second;
             if (usock != INVALID_SOCKET) {
                 std::ostringstream oss;
                 oss << typeStr << " TRIGGERED: sold " << filled << "x" << sym
@@ -842,18 +795,18 @@ static void checkConditionalOrders(const std::string& sym) {
                 sendServerMsg(usock, oss.str());
             }
         }
-        { std::lock_guard<std::mutex> plk(g_printMtx);
+        { std::lock_guard<std::mutex> plk(Global::printMtx);
           std::cout << "[" << typeStr << "] " << co.username << " " << sym
                     << " qty=" << filled << "\n"; }
         triggered.push_back(ci);
     }
     for (auto it = triggered.rbegin(); it != triggered.rend(); ++it)
-        g_conditionalOrders.erase(g_conditionalOrders.begin() + *it);
+        Global::conditionalOrders.erase(Global::conditionalOrders.begin() + *it);
 }
 
 /**
  * @brief Price/time-priority matching. Fills as much as possible, rests remainder.
- * Called with g_exMtx held.
+ * Called with Global::exMtx held.
  */
 static void matchOrders(Order& ord, OrderBook& book) {
     if(ord.side=='B'){
@@ -864,8 +817,8 @@ static void matchOrders(Order& ord, OrderBook& book) {
                 Order& r=oit->second;
                 uint32_t fill=std::min(ord.qty,r.qty);
                 recordTrade(ord.symbol,fill,lvlIt->first,ord,r);
-                ord.qty-=fill; r.qty-=fill; g_liveOrders[r.orderId].qty=r.qty;
-                if(r.qty==0){g_liveOrders.erase(r.orderId); oit=lvl.erase(oit);}else ++oit;
+                ord.qty-=fill; r.qty-=fill; Global::liveOrders[r.orderId].qty=r.qty;
+                if(r.qty==0){Global::liveOrders.erase(r.orderId); oit=lvl.erase(oit);}else ++oit;
             }
             if(lvl.empty()) lvlIt=book.asks.erase(lvlIt); else ++lvlIt;
         }
@@ -877,8 +830,8 @@ static void matchOrders(Order& ord, OrderBook& book) {
                 Order& r=oit->second;
                 uint32_t fill=std::min(ord.qty,r.qty);
                 recordTrade(ord.symbol,fill,lvlIt->first,r,ord);
-                ord.qty-=fill; r.qty-=fill; g_liveOrders[r.orderId].qty=r.qty;
-                if(r.qty==0){g_liveOrders.erase(r.orderId); oit=lvl.erase(oit);}else ++oit;
+                ord.qty-=fill; r.qty-=fill; Global::liveOrders[r.orderId].qty=r.qty;
+                if(r.qty==0){Global::liveOrders.erase(r.orderId); oit=lvl.erase(oit);}else ++oit;
             }
             if(lvl.empty()) lvlIt=book.bids.erase(lvlIt); else ++lvlIt;
         }
@@ -886,7 +839,7 @@ static void matchOrders(Order& ord, OrderBook& book) {
     if(ord.qty>0){
         if(ord.side=='B') book.bids[ord.price][ord.orderId]=ord;
         else              book.asks[ord.price][ord.orderId]=ord;
-        g_liveOrders[ord.orderId]=ord;
+        Global::liveOrders[ord.orderId]=ord;
     }
 }
 
@@ -901,8 +854,8 @@ static void matchOrders(Order& ord, OrderBook& book) {
 static void seedBotAccounts() {
     for (int i = 0; i < SIM_BOT_COUNT; ++i) {
         std::string name = "BOT_" + std::to_string(i + 1);
-        if (!g_accounts.count(name)) {
-            Account& bot  = g_accounts[name];
+        if (!Global::accounts.count(name)) {
+            Account& bot  = Global::accounts[name];
             bot.username  = name;
             bot.cash      = 1e9;
             for (auto& sym : SYMBOLS) bot.holdings[sym] = 500000;
@@ -943,7 +896,7 @@ static void simulationThread() {
     std::cout << "[SIM] Simulation thread started (interval ~"
               << (int)SIM_INTERVAL_MS << "ms).\n";
 
-    while (g_running.load()) {
+    while (Global::running.load()) {
         // ── Crisis phase machine (runs every tick) ──
         auto nowTP = std::chrono::steady_clock::now();
         int64_t nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1012,7 +965,7 @@ static void simulationThread() {
         }
         if (sleepMs < 30) sleepMs = 30;
         std::this_thread::sleep_for(std::chrono::milliseconds(sleepMs));
-        if (!g_running.load()) break;
+        if (!Global::running.load()) break;
 
         ++tick;
 
@@ -1150,11 +1103,11 @@ static void simulationThread() {
         }
 
         // Lock and place the order
-        std::lock_guard<std::mutex> lk(g_exMtx);
+        std::lock_guard<std::mutex> lk(Global::exMtx);
 
-        if (!g_accounts.count(botName)) continue;
-        Account& bot = g_accounts[botName];
-        OrderBook& book = g_books[sym];
+        if (!Global::accounts.count(botName)) continue;
+        Account& bot = Global::accounts[botName];
+        OrderBook& book = Global::books[sym];
 
         double price = 0.0;
 
@@ -1174,7 +1127,7 @@ static void simulationThread() {
         }
 
         // Create order
-        uint64_t oid = g_nextOrderId.fetch_add(1);
+        uint64_t oid = Global::nextOrderId.fetch_add(1);
         Order ord;
         ord.orderId  = oid;
         ord.username = botName;
@@ -1201,7 +1154,7 @@ static void simulationThread() {
                 bot.holdings[sym] += ord.qty;
             }
             // Remove resting remainder (bots don't leave resting orders)
-            if (g_liveOrders.count(oid)) {
+            if (Global::liveOrders.count(oid)) {
                 if (ord.side == 'B') {
                     book.bids[ord.price].erase(oid);
                     if (book.bids[ord.price].empty()) book.bids.erase(ord.price);
@@ -1209,7 +1162,7 @@ static void simulationThread() {
                     book.asks[ord.price].erase(oid);
                     if (book.asks[ord.price].empty()) book.asks.erase(ord.price);
                 }
-                g_liveOrders.erase(oid);
+                Global::liveOrders.erase(oid);
             }
             bot.openOrders.erase(oid);
         }
@@ -1226,7 +1179,7 @@ struct OHLCCandle { double open,high,low,close; uint32_t vol; std::string label;
 
 /**
  * @brief Build OHLC candles from the trade log by grouping trades into 1-minute buckets.
- * Returns up to the last 40 candles.  Called with g_exMtx held.
+ * Returns up to the last 40 candles.  Called with Global::exMtx held.
  */
 static std::vector<OHLCCandle> buildCandles(const std::vector<TradePoint>& log) {
     if(log.empty()) return {};
@@ -1297,21 +1250,21 @@ static void clientSession(SOCKET sock) {
     // Register socket in user map on login, deregister on exit
     auto cleanup = [&]() {
         if(!username.empty()){
-            std::lock_guard<std::mutex> lk(g_userSockMtx);
-            g_userSockets.erase(username);
+            std::lock_guard<std::mutex> lk(Global::userSockMtx);
+            Global::userSockets.erase(username);
         }
         // Remove this client's UDP subscriber entry (exact IP:port match)
         if(hasUdpSub) {
-            std::lock_guard<std::mutex> lk(g_subMtx);
-            g_subscribers.erase(
-                std::remove_if(g_subscribers.begin(), g_subscribers.end(),
-                    [&](const UdpSubscriber& sub){ return memcmp(&sub.addr,&udpSubAddr,sizeof(udpSubAddr))==0; }),
-                g_subscribers.end());
+            std::lock_guard<std::mutex> lk(Global::subMtx);
+            Global::subscribers.erase(
+                std::remove_if(Global::subscribers.begin(), Global::subscribers.end(),
+                    [&](const Global::UdpSubscriber& sub){ return memcmp(&sub.addr,&udpSubAddr,sizeof(udpSubAddr))==0; }),
+                Global::subscribers.end());
         }
 
         shutdown(sock, SD_BOTH);
         closesocket(sock);
-        std::lock_guard<std::mutex> lk(g_printMtx);
+        std::lock_guard<std::mutex> lk(Global::printMtx);
         std::cout<<"[DISCONNECT] "<<(username.empty()?"anon":username)<<"\n";
     };
 
@@ -1348,21 +1301,21 @@ static void clientSession(SOCKET sock) {
             // Block login as the house/market-maker account
             if(user==HOUSE_USER){ std::vector<char> p; pushStr1(p,"Reserved system account."); sendFrame(sock,CMD_LOGIN_FAIL,p); break; }
             {
-                std::lock_guard<std::mutex> lk(g_exMtx);
+                std::lock_guard<std::mutex> lk(Global::exMtx);
                 std::string ph = hashPassword(user, pass);
-                if(!g_accounts.count(user)){
+                if(!Global::accounts.count(user)){
                     // New account — register with this password
-                    g_accounts[user].username=user;
-                    g_accounts[user].passwordHash=ph;
-                    std::lock_guard<std::mutex> plk(g_printMtx); std::cout<<"[NEW] "<<user<<"\n";
+                    Global::accounts[user].username=user;
+                    Global::accounts[user].passwordHash=ph;
+                    std::lock_guard<std::mutex> plk(Global::printMtx); std::cout<<"[NEW] "<<user<<"\n";
                 } else {
                     // Existing account — validate password
-                    if(g_accounts[user].passwordHash != ph){
+                    if(Global::accounts[user].passwordHash != ph){
                         std::vector<char> p; pushStr1(p,"Wrong password."); sendFrame(sock,CMD_LOGIN_FAIL,p); break;
                     }
                 }
                 username = user;
-                Account& acc=g_accounts[user];
+                Account& acc=Global::accounts[user];
                 std::vector<char> p; pushDouble(p,acc.cash);
                 pushU16(p,(uint16_t)acc.holdings.size());
                 for(auto&[sym,qty]:acc.holdings){pushStr1(p,sym);pushU32(p,qty);}
@@ -1374,8 +1327,8 @@ static void clientSession(SOCKET sock) {
                     sendFrame(sock,CMD_ORDER_LIST,ol);
                 }
             }
-            { std::lock_guard<std::mutex> lk(g_userSockMtx); g_userSockets[user]=sock; }
-            { std::lock_guard<std::mutex> lk(g_printMtx); std::cout<<"[LOGIN] "<<user<<"\n"; }
+            { std::lock_guard<std::mutex> lk(Global::userSockMtx); Global::userSockets[user]=sock; }
+            { std::lock_guard<std::mutex> lk(Global::printMtx); std::cout<<"[LOGIN] "<<user<<"\n"; }
             break;
         }
 
@@ -1392,12 +1345,12 @@ static void clientSession(SOCKET sock) {
                 std::vector<char> p; pushStr1(p,"Malformed order."); sendFrame(sock,CMD_ORDER_REJECT,p); break;
             }
             char side=(sideU8==0)?'B':'S';
-            std::lock_guard<std::mutex> lk(g_exMtx);
-            if(!g_books.count(sym)){ std::vector<char> p; pushStr1(p,"Unknown symbol: "+sym); sendFrame(sock,CMD_ORDER_REJECT,p); break; }
+            std::lock_guard<std::mutex> lk(Global::exMtx);
+            if(!Global::books.count(sym)){ std::vector<char> p; pushStr1(p,"Unknown symbol: "+sym); sendFrame(sock,CMD_ORDER_REJECT,p); break; }
             if(qty==0){ std::vector<char> p; pushStr1(p,"Invalid qty."); sendFrame(sock,CMD_ORDER_REJECT,p); break; }
             // Market order: price=0 means use best available price from order book
             if(price <= 0) {
-                auto& book = g_books[sym];
+                auto& book = Global::books[sym];
                 if(side=='B') {
                     if(book.asks.empty()){ std::vector<char> p; pushStr1(p,"No asks available for market buy."); sendFrame(sock,CMD_ORDER_REJECT,p); break; }
                     price = book.asks.rbegin()->first;  // highest ask = worst case for reservation
@@ -1406,7 +1359,7 @@ static void clientSession(SOCKET sock) {
                     price = book.bids.rbegin()->first;  // lowest bid
                 }
             }
-            Account& acc=g_accounts[username];
+            Account& acc=Global::accounts[username];
             if(side=='B'){
                 double cost=price*qty;
                 if(acc.cash<cost){ std::vector<char> p; pushStr1(p,"Insufficient cash (need $"+[&](){std::ostringstream ss;ss<<std::fixed<<std::setprecision(2)<<cost;return ss.str();}()+")."); sendFrame(sock,CMD_ORDER_REJECT,p); break; }
@@ -1416,16 +1369,16 @@ static void clientSession(SOCKET sock) {
                 if(held<qty){ std::vector<char> p; pushStr1(p,"Insufficient shares (have "+std::to_string(held)+")."); sendFrame(sock,CMD_ORDER_REJECT,p); break; }
                 acc.holdings[sym]-=qty; if(acc.holdings[sym]==0) acc.holdings.erase(sym);
             }
-            uint64_t oid=g_nextOrderId.fetch_add(1);
+            uint64_t oid=Global::nextOrderId.fetch_add(1);
             Order ord; ord.orderId=oid; ord.username=username; ord.side=side;
             ord.symbol=sym; ord.qty=qty; ord.origQty=qty; ord.price=price;
             ord.ts=std::chrono::steady_clock::now();
             // ORDER_ACK
             { std::vector<char> p; pushU64(p,oid); pushU8(p,sideU8); pushStr1(p,sym); pushU32(p,qty); pushDouble(p,price); sendFrame(sock,CMD_ORDER_ACK,p); }
             acc.openOrders[oid]=ord;
-            { std::lock_guard<std::mutex> plk(g_printMtx);
+            { std::lock_guard<std::mutex> plk(Global::printMtx);
               std::cout<<"[ORDER #"<<oid<<"] "<<username<<" "<<side<<" "<<qty<<"x"<<sym<<" @"<<std::fixed<<std::setprecision(4)<<price<<"\n"; }
-            matchOrders(ord,g_books[sym]);
+            matchOrders(ord,Global::books[sym]);
             // Re-quote MM after matching (deferred to avoid iterator invalidation)
             requoteMarketMaker(sym);
             checkConditionalOrders(sym);
@@ -1439,32 +1392,32 @@ static void clientSession(SOCKET sock) {
             if(username.empty()){ sendServerMsg(sock,"Not logged in."); break; }
             uint64_t oid=0;
             if(!readU64(payload.data(),(int)payLen,o,oid)){ std::vector<char> p; pushStr1(p,"Malformed cancel."); sendFrame(sock,CMD_CANCEL_REJECT,p); break; }
-            std::lock_guard<std::mutex> lk(g_exMtx);
-            auto it=g_liveOrders.find(oid);
-            if(it==g_liveOrders.end()){ std::vector<char> p; pushStr1(p,"Order not found."); sendFrame(sock,CMD_CANCEL_REJECT,p); break; }
+            std::lock_guard<std::mutex> lk(Global::exMtx);
+            auto it=Global::liveOrders.find(oid);
+            if(it==Global::liveOrders.end()){ std::vector<char> p; pushStr1(p,"Order not found."); sendFrame(sock,CMD_CANCEL_REJECT,p); break; }
             Order& ord=it->second;
             if(ord.username!=username){ std::vector<char> p; pushStr1(p,"Not your order."); sendFrame(sock,CMD_CANCEL_REJECT,p); break; }
-            OrderBook& book=g_books[ord.symbol];
+            OrderBook& book=Global::books[ord.symbol];
             if(ord.side=='B'){
                 auto li=book.bids.find(ord.price); if(li!=book.bids.end()){li->second.erase(oid);if(li->second.empty())book.bids.erase(li);}
-                g_accounts[username].cash+=ord.price*ord.qty;
+                Global::accounts[username].cash+=ord.price*ord.qty;
             } else {
                 auto li=book.asks.find(ord.price); if(li!=book.asks.end()){li->second.erase(oid);if(li->second.empty())book.asks.erase(li);}
-                g_accounts[username].holdings[ord.symbol]+=ord.qty;
+                Global::accounts[username].holdings[ord.symbol]+=ord.qty;
             }
-            g_accounts[username].openOrders.erase(oid);
-            g_liveOrders.erase(it);
+            Global::accounts[username].openOrders.erase(oid);
+            Global::liveOrders.erase(it);
             { std::vector<char> p; pushU64(p,oid); sendFrame(sock,CMD_CANCEL_ACK,p); }
-            { std::lock_guard<std::mutex> plk(g_printMtx); std::cout<<"[CANCEL #"<<oid<<"] "<<username<<"\n"; }
+            { std::lock_guard<std::mutex> plk(Global::printMtx); std::cout<<"[CANCEL #"<<oid<<"] "<<username<<"\n"; }
             break;
         }
 
         case CMD_QUERY_MARKET: {
             std::string sym;
             if(!readStr1(payload.data(),(int)payLen,o,sym)){ sendServerMsg(sock,"Malformed query."); break; }
-            std::lock_guard<std::mutex> lk(g_exMtx);
-            if(!g_books.count(sym)){ sendServerMsg(sock,"Unknown symbol: "+sym); break; }
-            auto& book=g_books[sym];
+            std::lock_guard<std::mutex> lk(Global::exMtx);
+            if(!Global::books.count(sym)){ sendServerMsg(sock,"Unknown symbol: "+sym); break; }
+            auto& book=Global::books[sym];
             double bid=0,ask=0,last=book.lastPrice; uint32_t bidQty=0,askQty=0,vol=book.volume;
             if(!book.bids.empty()){ bid=book.bids.begin()->first; for(auto&[id,o]:book.bids.begin()->second) bidQty+=o.qty; }
             if(!book.asks.empty()){ ask=book.asks.begin()->first; for(auto&[id,o]:book.asks.begin()->second) askQty+=o.qty; }
@@ -1475,8 +1428,8 @@ static void clientSession(SOCKET sock) {
 
         case CMD_QUERY_ACCOUNT: {
             if(username.empty()){ sendServerMsg(sock,"Not logged in."); break; }
-            std::lock_guard<std::mutex> lk(g_exMtx);
-            Account& acc=g_accounts[username];
+            std::lock_guard<std::mutex> lk(Global::exMtx);
+            Account& acc=Global::accounts[username];
             std::vector<char> p; pushDouble(p,acc.cash); pushU16(p,(uint16_t)acc.holdings.size());
             for(auto&[sym,qty]:acc.holdings){pushStr1(p,sym);pushU32(p,qty);}
             sendFrame(sock,CMD_ACCOUNT_DATA,p);
@@ -1485,8 +1438,8 @@ static void clientSession(SOCKET sock) {
 
         case CMD_QUERY_ORDERS: {
             if(username.empty()){ sendServerMsg(sock,"Not logged in."); break; }
-            std::lock_guard<std::mutex> lk(g_exMtx);
-            Account& acc=g_accounts[username];
+            std::lock_guard<std::mutex> lk(Global::exMtx);
+            Account& acc=Global::accounts[username];
             std::vector<char> p; pushU16(p,(uint16_t)acc.openOrders.size());
             for(auto&[oid,ord]:acc.openOrders){ pushU64(p,oid); pushU8(p,ord.side=='B'?0:1); pushStr1(p,ord.symbol); pushU32(p,ord.qty); pushDouble(p,ord.price); }
             sendFrame(sock,CMD_ORDER_LIST,p);
@@ -1495,8 +1448,8 @@ static void clientSession(SOCKET sock) {
 
         case CMD_QUERY_TRADES: {
             if(username.empty()){ sendServerMsg(sock,"Not logged in."); break; }
-            std::lock_guard<std::mutex> lk(g_exMtx);
-            Account& acc=g_accounts[username];
+            std::lock_guard<std::mutex> lk(Global::exMtx);
+            Account& acc=Global::accounts[username];
             size_t start=acc.trades.size()>50?acc.trades.size()-50:0;
             uint16_t cnt=(uint16_t)(acc.trades.size()-start);
             std::vector<char> p; pushU16(p,cnt);
@@ -1513,9 +1466,9 @@ static void clientSession(SOCKET sock) {
         case CMD_QUERY_HISTORY: {
             std::string sym;
             if(!readStr1(payload.data(),(int)payLen,o,sym)){ sendServerMsg(sock,"Malformed history query."); break; }
-            std::lock_guard<std::mutex> lk(g_exMtx);
-            if(!g_books.count(sym)){ sendServerMsg(sock,"Unknown symbol: "+sym); break; }
-            auto candles = buildCandles(g_books[sym].tradeLog);
+            std::lock_guard<std::mutex> lk(Global::exMtx);
+            if(!Global::books.count(sym)){ sendServerMsg(sock,"Unknown symbol: "+sym); break; }
+            auto candles = buildCandles(Global::books[sym].tradeLog);
             std::vector<char> p; pushStr1(p,sym); pushU16(p,(uint16_t)candles.size());
             for(auto& c : candles){
                 pushDouble(p,c.open); pushDouble(p,c.high); pushDouble(p,c.low); pushDouble(p,c.close);
@@ -1534,11 +1487,11 @@ static void clientSession(SOCKET sock) {
             getpeername(sock,(sockaddr*)&caddr,&caddrLen);
             caddr.sin_port=htons(udpPort);
             {
-                std::lock_guard<std::mutex> lk(g_subMtx);
+                std::lock_guard<std::mutex> lk(Global::subMtx);
                 // Avoid duplicates
                 bool found=false;
-                for(auto&sub:g_subscribers){ if(memcmp(&sub.addr,&caddr,sizeof(caddr))==0){found=true;break;} }
-                if(!found) g_subscribers.push_back({caddr});
+                for(auto&sub:Global::subscribers){ if(memcmp(&sub.addr,&caddr,sizeof(caddr))==0){found=true;break;} }
+                if(!found) Global::subscribers.push_back({caddr});
             }
             sendServerMsg(sock,"Subscribed to UDP market data on port "+std::to_string(udpPort)+".");
             // Track for cleanup on disconnect
@@ -1570,15 +1523,15 @@ static void clientSession(SOCKET sock) {
                 sendServerMsg(sock,"Malformed stop order."); break;
             }
             char type = (typeU8 == 0) ? 'S' : 'T';  // 0=stop-loss, 1=take-profit
-            std::lock_guard<std::mutex> lk(g_exMtx);
-            if(!g_accounts.count(username)){ sendServerMsg(sock,"Account not found."); break; }
-            if(!g_books.count(sym)){ sendServerMsg(sock,"Unknown symbol: "+sym); break; }
-            Account& acc = g_accounts[username];
+            std::lock_guard<std::mutex> lk(Global::exMtx);
+            if(!Global::accounts.count(username)){ sendServerMsg(sock,"Account not found."); break; }
+            if(!Global::books.count(sym)){ sendServerMsg(sock,"Unknown symbol: "+sym); break; }
+            Account& acc = Global::accounts[username];
             // Validate user has enough shares
             uint32_t held = acc.holdings.count(sym) ? acc.holdings[sym] : 0;
             if(held < qty){ sendServerMsg(sock,"Insufficient shares (have "+std::to_string(held)+"). Cannot set stop order."); break; }
             // Validate trigger price makes sense vs current price
-            double curPx = g_books[sym].lastPrice;
+            double curPx = Global::books[sym].lastPrice;
             if(curPx > 0) {
                 if(type == 'S' && trigPx >= curPx){
                     std::ostringstream oss;
@@ -1593,8 +1546,8 @@ static void clientSession(SOCKET sock) {
                     sendServerMsg(sock, oss.str()); break;
                 }
             }
-            uint64_t cid = g_nextCondId.fetch_add(1);
-            g_conditionalOrders.push_back({cid, username, sym, type, qty, trigPx});
+            uint64_t cid = Global::nextCondId.fetch_add(1);
+            Global::conditionalOrders.push_back({cid, username, sym, type, qty, trigPx});
             std::string typeStr = (type == 'S') ? "STOP-LOSS" : "TAKE-PROFIT";
             std::ostringstream oss;
             oss << typeStr << " #" << cid << " set: sell " << qty << "x" << sym
@@ -1607,8 +1560,8 @@ static void clientSession(SOCKET sock) {
 
         case CMD_QUERY_PORTFOLIO: {
             if(username.empty()){ sendServerMsg(sock,"Not logged in."); break; }
-            std::lock_guard<std::mutex> lk(g_exMtx);
-            auto& acc = g_accounts[username];
+            std::lock_guard<std::mutex> lk(Global::exMtx);
+            auto& acc = Global::accounts[username];
             std::vector<char> p;
             // Count positions (only symbols with holdings)
             uint16_t numPos = 0;
@@ -1617,7 +1570,7 @@ static void clientSession(SOCKET sock) {
             for(auto&[sym,qty]:acc.holdings) {
                 if(qty==0) continue;
                 double avg = acc.avgCost.count(sym) ? acc.avgCost[sym] : 0;
-                double cur = g_books.count(sym) ? g_books[sym].lastPrice : 0;
+                double cur = Global::books.count(sym) ? Global::books[sym].lastPrice : 0;
                 pushStr1(p,sym); pushU32(p,qty); pushDouble(p,avg); pushDouble(p,cur);
             }
             pushDouble(p, acc.cash);
@@ -1627,11 +1580,11 @@ static void clientSession(SOCKET sock) {
 
         case CMD_QUERY_STOPS: {
             if(username.empty()){ sendServerMsg(sock,"Not logged in."); break; }
-            std::lock_guard<std::mutex> lk(g_exMtx);
+            std::lock_guard<std::mutex> lk(Global::exMtx);
             std::ostringstream oss;
             oss << "Active conditional orders:\n";
             int count = 0;
-            for(auto& co : g_conditionalOrders) {
+            for(auto& co : Global::conditionalOrders) {
                 if(co.username != username) continue;
                 std::string typeStr = (co.type == 'S') ? "STOP-LOSS" : "TAKE-PROFIT";
                 oss << "  #" << co.id << " " << typeStr << " " << co.qty << "x" << co.symbol
@@ -1647,11 +1600,11 @@ static void clientSession(SOCKET sock) {
             if(username.empty()){ sendServerMsg(sock,"Not logged in."); break; }
             uint64_t cid=0;
             if(!readU64(payload.data(),(int)payLen,o,cid)){ sendServerMsg(sock,"Malformed cancel."); break; }
-            std::lock_guard<std::mutex> lk(g_exMtx);
+            std::lock_guard<std::mutex> lk(Global::exMtx);
             bool found = false;
-            for(auto it = g_conditionalOrders.begin(); it != g_conditionalOrders.end(); ++it) {
+            for(auto it = Global::conditionalOrders.begin(); it != Global::conditionalOrders.end(); ++it) {
                 if(it->id == cid && it->username == username) {
-                    g_conditionalOrders.erase(it);
+                    Global::conditionalOrders.erase(it);
                     sendServerMsg(sock, "Conditional order #" + std::to_string(cid) + " cancelled.");
                     found = true;
                     break;
@@ -1672,18 +1625,18 @@ static void clientSession(SOCKET sock) {
  * Background threads
  *--------------------------------------------------------------------------*/
 
-/** Drains g_bcastQueue and sendto() each datagram to all subscribers. */
+/** Drains Global::bcastQueue and sendto() each datagram to all subscribers. */
 static void udpBroadcastThread() {
-    while(g_running.load()) {
-        std::unique_lock<std::mutex> lk(g_bcastMtx);
-        g_bcastCV.wait_for(lk, std::chrono::milliseconds(100), []{ return !g_bcastQueue.empty(); });
-        while(!g_bcastQueue.empty()) {
-            BroadcastItem item = std::move(g_bcastQueue.front());
-            g_bcastQueue.pop_front();
+    while(Global::running.load()) {
+        std::unique_lock<std::mutex> lk(Global::bcastMtx);
+        Global::bcastCV.wait_for(lk, std::chrono::milliseconds(100), []{ return !Global::bcastQueue.empty(); });
+        while(!Global::bcastQueue.empty()) {
+            Global::BroadcastItem item = std::move(Global::bcastQueue.front());
+            Global::bcastQueue.pop_front();
             lk.unlock();
-            std::lock_guard<std::mutex> slk(g_subMtx);
-            for(auto& sub : g_subscribers) {
-                sendto(g_udpSocket, item.payload.data(), (int)item.payload.size(), 0,
+            std::lock_guard<std::mutex> slk(Global::subMtx);
+            for(auto& sub : Global::subscribers) {
+                sendto(Global::udpSocket, item.payload.data(), (int)item.payload.size(), 0,
                        (const sockaddr*)&sub.addr, sizeof(sub.addr));
             }
             lk.lock();
@@ -1693,7 +1646,7 @@ static void udpBroadcastThread() {
 
 static void persistThread() {
     auto last=std::chrono::steady_clock::now();
-    while(g_running.load()){
+    while(Global::running.load()){
         std::this_thread::sleep_for(std::chrono::seconds(1));
         if(std::chrono::duration<double>(std::chrono::steady_clock::now()-last).count()>=PERSIST_INTERVAL){
             persistData(); last=std::chrono::steady_clock::now();
@@ -1715,7 +1668,7 @@ int main() {
     while(!udpPortStr.empty()&&(udpPortStr.back()=='\r'||udpPortStr.back()=='\n')) udpPortStr.pop_back();
     std::cout<<"Data directory (for persistence): "; std::getline(std::cin,persistPath);
     while(!persistPath.empty()&&(persistPath.back()=='\r'||persistPath.back()=='\n')) persistPath.pop_back();
-    g_persistPath=persistPath;
+    Global::persistPath=persistPath;
     uint16_t tcpPort=(uint16_t)std::stoi(tcpPortStr);
     uint16_t udpPort=(uint16_t)std::stoi(udpPortStr);
 
@@ -1734,10 +1687,10 @@ int main() {
     if(listen(listener,SOMAXCONN)!=0){ std::cerr<<"listen failed.\n"; closesocket(listener); WSACleanup(); return 5; }
 
     // --- Step 4: UDP socket for broadcasts ---
-    g_udpSocket=socket(AF_INET,SOCK_DGRAM,IPPROTO_UDP);
-    if(g_udpSocket==INVALID_SOCKET){ std::cerr<<"UDP socket failed.\n"; closesocket(listener); WSACleanup(); return 6; }
+    Global::udpSocket=socket(AF_INET,SOCK_DGRAM,IPPROTO_UDP);
+    if(Global::udpSocket==INVALID_SOCKET){ std::cerr<<"UDP socket failed.\n"; closesocket(listener); WSACleanup(); return 6; }
     sockaddr_in udpBind{}; udpBind.sin_family=AF_INET; udpBind.sin_addr.s_addr=INADDR_ANY; udpBind.sin_port=htons(udpPort);
-    if(bind(g_udpSocket,(sockaddr*)&udpBind,sizeof(udpBind))!=0){ std::cerr<<"UDP bind failed.\n"; closesocket(g_udpSocket); closesocket(listener); WSACleanup(); return 7; }
+    if(bind(Global::udpSocket,(sockaddr*)&udpBind,sizeof(udpBind))!=0){ std::cerr<<"UDP bind failed.\n"; closesocket(Global::udpSocket); closesocket(listener); WSACleanup(); return 7; }
 
     // --- Step 5: Print server address ---
     char hostname[256]; gethostname(hostname,sizeof(hostname));
@@ -1764,21 +1717,21 @@ int main() {
 
     // --- Step 8: Accept loop (pre-threading: spawn one thread per client) ---
     std::cout<<"Exchange ready. Ctrl+C to stop.\n\n";
-    while(g_running.load()) {
+    while(Global::running.load()) {
         sockaddr_in clientAddr{}; int addrLen=sizeof(clientAddr);
         SOCKET clientSock=accept(listener,(sockaddr*)&clientAddr,&addrLen);
         if(clientSock==INVALID_SOCKET) break;
         char ip[INET_ADDRSTRLEN]; inet_ntop(AF_INET,&clientAddr.sin_addr,ip,sizeof(ip));
-        { std::lock_guard<std::mutex> lk(g_printMtx);
+        { std::lock_guard<std::mutex> lk(Global::printMtx);
           std::cout<<"[CONNECT] "<<ip<<":"<<ntohs(clientAddr.sin_port)<<"\n"; }
         std::thread(clientSession, clientSock).detach();
     }
 
     // --- Shutdown ---
-    g_running=false;
+    Global::running=false;
     closesocket(listener);
     bcastThr.join(); persThr.join(); simThr.join();
-    closesocket(g_udpSocket);
+    closesocket(Global::udpSocket);
     WSACleanup();
     return 0;
 }
