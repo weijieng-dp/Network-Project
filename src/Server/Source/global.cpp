@@ -1,6 +1,8 @@
 #include "global.h"
 
-std::mutex Global::exMtx;   
+std::vector<std::string>					Global::SYMBOLS{ "AAPL","GOOGL","MSFT","TSLA","AMZN" };
+
+std::mutex									Global::exMtx;   
 
 std::unordered_map<std::string, Account>	Global::accounts;
 std::unordered_map<std::string, OrderBook>	Global::books;

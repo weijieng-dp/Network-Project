@@ -117,12 +117,11 @@ prior written consent of DigiPen Institute of Technology is prohibited.
 #include "utils.h"
 #include "types.h"
 #include "global.h"
+#include "persistence.h"
 
 static const int    MAX_PAYLOAD       = 8192;   // max TCP payload bytes
 static const double PERSIST_INTERVAL  = 5.0;    // seconds between disk flushes
 static const int    WORKER_THREADS    = 20;      // pre-spawned worker pool size
-
-static const std::vector<std::string> SYMBOLS = {"AAPL","GOOGL","MSFT","TSLA","AMZN"};
 
 /*--------------------------------------------------------------------------
  * TCP framed send: CmdID(1) + PayloadLen(2) + Payload
@@ -203,129 +202,6 @@ static const std::unordered_map<std::string, double> CRISIS_VULNERABILITY = {
 };
 
 
-//static std::vector<ConditionalOrder> Global::conditionalOrders;
-//static std::atomic<uint64_t> Global::nextCondId{1};
-
-/*--------------------------------------------------------------------------
- * Utility
- *--------------------------------------------------------------------------*/
-
-static std::string nowString() {
-    time_t t=time(nullptr); struct tm tm{}; localtime_s(&tm,&t);
-    char buf[32]; strftime(buf,sizeof(buf),"%Y-%m-%d_%H:%M:%S",&tm); return buf;
-}
-
-/*--------------------------------------------------------------------------
- * Persistence
- *--------------------------------------------------------------------------*/
-
-static void persistData() {
-    std::string logMsg;
-    {
-        std::lock_guard<std::mutex> lk(Global::exMtx);
-        // --- accounts.dat: cash + holdings ---
-        std::ofstream fa(Global::persistPath+"\\accounts.dat",std::ios::trunc);
-        for(auto&[u,acc]:Global::accounts){
-            fa<<"A "<<u<<" "<<std::fixed<<std::setprecision(6)<<acc.cash<<" "<<acc.passwordHash<<"\n";
-            for(auto&[sym,qty]:acc.holdings) if(qty>0) fa<<"H "<<sym<<" "<<qty<<"\n";
-        }
-        // --- trades.dat: trade log ---
-        std::ofstream ft(Global::persistPath+"\\trades.dat",std::ios::trunc);
-        for(auto&tr:Global::allTrades)
-            ft<<tr.tradeId<<" "<<tr.symbol<<" "<<tr.qty<<" "
-              <<std::fixed<<std::setprecision(6)<<tr.price<<" "
-              <<tr.buyUser<<" "<<tr.sellUser<<" "<<tr.datetime<<"\n";
-        // --- orders.dat: all resting orders in the book ---
-        std::ofstream fo(Global::persistPath+"\\orders.dat",std::ios::trunc);
-        for(auto&[oid,ord]:Global::liveOrders){
-            fo<<"O "<<oid<<" "<<ord.username<<" "<<ord.side<<" "
-              <<ord.symbol<<" "<<ord.qty<<" "<<ord.origQty<<" "
-              <<std::fixed<<std::setprecision(6)<<ord.price<<"\n";
-        }
-        // --- history.dat: price history for charting ---
-        std::ofstream fh(Global::persistPath+"\\history.dat",std::ios::trunc);
-        for(auto&[sym,book]:Global::books){
-            for(auto&tp:book.tradeLog)
-                fh<<sym<<" "<<std::fixed<<std::setprecision(6)<<tp.price<<" "<<tp.qty<<" "<<tp.datetime<<"\n";
-        }
-        logMsg = "["+nowString()+"] Persisted "+std::to_string(Global::accounts.size())+" accounts, "
-                +std::to_string(Global::allTrades.size())+" trades, "
-                +std::to_string(Global::liveOrders.size())+" orders.";
-    }
-    // Print AFTER releasing Global::exMtx to avoid double-lock with Global::printMtx
-    std::lock_guard<std::mutex> plk(Global::printMtx);
-    std::cout<<logMsg<<"\n";
-}
-
-static void loadData() {
-    // --- Load accounts ---
-    std::ifstream fa(Global::persistPath+"\\accounts.dat");
-    if(fa.is_open()){
-        std::string line,curUser;
-        while(std::getline(fa,line)){
-            if(line.empty()) continue;
-            std::istringstream ss(line); char tag; ss>>tag;
-            if(tag=='A'){ std::string u,ph; double c; ss>>u>>c>>ph; Global::accounts[u].username=u; Global::accounts[u].cash=c; Global::accounts[u].passwordHash=ph; curUser=u; }
-            else if(tag=='H'&&!curUser.empty()){ std::string sym; uint32_t qty; ss>>sym>>qty; Global::accounts[curUser].holdings[sym]=qty; }
-        }
-        std::cout<<"Loaded "<<Global::accounts.size()<<" accounts.\n";
-    }
-    // --- Load trades ---
-    std::ifstream ft(Global::persistPath+"\\trades.dat");
-    if(ft.is_open()){
-        Trade tr;
-        while(ft>>tr.tradeId>>tr.symbol>>tr.qty>>tr.price>>tr.buyUser>>tr.sellUser>>tr.datetime){
-            Global::allTrades.push_back(tr);
-            Global::accounts[tr.buyUser].trades.push_back(tr);
-            Global::accounts[tr.sellUser].trades.push_back(tr);
-            if(tr.tradeId>=Global::nextTradeId.load()) Global::nextTradeId.store(tr.tradeId+1);
-        }
-        std::cout<<"Loaded "<<Global::allTrades.size()<<" trades.\n";
-    }
-    // --- Load resting orders (rebuild order book) ---
-    std::ifstream fo(Global::persistPath+"\\orders.dat");
-    if(fo.is_open()){
-        std::string line;
-        uint64_t maxOid = Global::nextOrderId.load();
-        while(std::getline(fo,line)){
-            if(line.empty()) continue;
-            std::istringstream ss(line); char tag; ss>>tag;
-            if(tag!='O') continue;
-            uint64_t oid=0; std::string user; char side; std::string sym;
-            uint32_t qty=0, origQty=0; double price=0;
-            ss>>oid>>user>>side>>sym>>qty>>origQty>>price;
-            if(oid==0||user.empty()||sym.empty()||qty==0) continue;
-
-            Order ord;
-            ord.orderId=oid; ord.username=user; ord.side=side;
-            ord.symbol=sym; ord.qty=qty; ord.origQty=origQty; ord.price=price;
-            ord.ts=std::chrono::steady_clock::now();
-
-            // Insert into the order book
-            if(side=='B') Global::books[sym].bids[price][oid]=ord;
-            else          Global::books[sym].asks[price][oid]=ord;
-            Global::liveOrders[oid]=ord;
-            Global::accounts[user].openOrders[oid]=ord;
-
-            if(oid>=maxOid) maxOid=oid+1;
-        }
-        Global::nextOrderId.store(maxOid);
-        std::cout<<"Loaded "<<Global::liveOrders.size()<<" resting orders.\n";
-    }
-    // --- Load price history for charting ---
-    std::ifstream fh(Global::persistPath+"\\history.dat");
-    if(fh.is_open()){
-        std::string sym,dt; double price; uint32_t qty;
-        size_t hcount=0;
-        while(fh>>sym>>price>>qty>>dt){
-            Global::books[sym].tradeLog.push_back({price,qty,dt});
-            ++hcount;
-        }
-        std::cout<<"Loaded "<<hcount<<" price history points.\n";
-    }
-    for(auto&sym:SYMBOLS) Global::books[sym];
-}
-
 /*--------------------------------------------------------------------------
  * House / Market-Maker account seeding
  *--------------------------------------------------------------------------*/
@@ -388,14 +264,14 @@ static void seedMarketMaker() {
     Account& house = Global::accounts[HOUSE_USER];
     house.username = HOUSE_USER;
     house.cash     = HOUSE_CASH;
-    for (auto& sym : SYMBOLS)
+    for (auto& sym : Global::SYMBOLS)
         house.holdings[sym] = HOUSE_SHARES_PER_SYM;
 
     std::cout << "[HOUSE] EXCHANGE account: $" << std::fixed << std::setprecision(0)
               << house.cash << ", " << HOUSE_SHARES_PER_SYM << " shares/symbol\n";
 
     // Seed multi-level depth for each symbol using requoteMarketMaker logic
-    for (auto& sym : SYMBOLS) {
+    for (auto& sym : Global::SYMBOLS) {
         double refPx = REFERENCE_PRICES.count(sym) ? REFERENCE_PRICES.at(sym) : 100.0;
         OrderBook& book = Global::books[sym];
         book.lastPrice = refPx;
@@ -417,7 +293,7 @@ static void seedMarketMaker() {
         }
     }
 
-    std::cout << "[HOUSE] Market maker seeded — " << SYMBOLS.size() * MM_DEPTH_LEVELS * 2
+    std::cout << "[HOUSE] Market maker seeded — " << Global::SYMBOLS.size() * MM_DEPTH_LEVELS * 2
               << " orders placed (" << MM_DEPTH_LEVELS << " levels/side).\n\n";
 }
 
@@ -818,7 +694,7 @@ static void seedBotAccounts() {
             Account& bot  = Global::accounts[name];
             bot.username  = name;
             bot.cash      = 1e9;
-            for (auto& sym : SYMBOLS) bot.holdings[sym] = 500000;
+            for (auto& sym : Global::SYMBOLS) bot.holdings[sym] = 500000;
         }
     }
     std::cout << "[SIM] " << SIM_BOT_COUNT << " bot accounts ready.\n";
@@ -835,7 +711,7 @@ static void seedBotAccounts() {
  */
 static void simulationThread() {
     std::mt19937 rng(std::random_device{}());
-    std::uniform_int_distribution<int>      symDist(0, (int)SYMBOLS.size() - 1);
+    std::uniform_int_distribution<int>      symDist(0, (int)Global::SYMBOLS.size() - 1);
     std::uniform_int_distribution<int>      botDist(1, SIM_BOT_COUNT);
     std::uniform_int_distribution<uint32_t> qtyDist(SIM_QTY_MIN, SIM_QTY_MAX);
     std::uniform_real_distribution<double>  jitterDist(-SIM_JITTER_MS, SIM_JITTER_MS);
@@ -849,7 +725,7 @@ static void simulationThread() {
         bool   burstBuy = true;       // burst direction
     };
     std::map<std::string, SymState> symState;
-    for (auto& sym : SYMBOLS) symState[sym] = {};
+    for (auto& sym : Global::SYMBOLS) symState[sym] = {};
 
     uint64_t tick = 0;
 
@@ -931,7 +807,7 @@ static void simulationThread() {
 
         // Pick random symbol and bot
         int si = symDist(rng);
-        std::string sym  = SYMBOLS[si];
+        std::string sym  = Global::SYMBOLS[si];
         int botNum = botDist(rng);
         std::string botName = "BOT_" + std::to_string(botNum);
         auto& ss = symState[sym];
@@ -1661,7 +1537,7 @@ int main() {
     }
     std::cout<<"TCP Port    : "<<tcpPort<<"\n";
     std::cout<<"UDP Port    : "<<udpPort<<"  (market data broadcasts)\n";
-    std::cout<<"Symbols     : "; for(auto&s:SYMBOLS) std::cout<<s<<" "; std::cout<<"\n\n";
+    std::cout<<"Symbols     : "; for(auto&s:Global::SYMBOLS) std::cout<<s<<" "; std::cout<<"\n\n";
 
     // --- Step 6: Load persisted data ---
     loadData();

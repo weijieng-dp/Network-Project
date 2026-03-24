@@ -13,6 +13,9 @@
 
 class Global {
 public:
+
+	static std::vector<std::string> SYMBOLS;
+
 	/*--------------------------------------------------------------------------
 	 * Global exchange state  (protected by exMtx)
 	 *--------------------------------------------------------------------------*/
