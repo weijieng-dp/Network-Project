@@ -2,6 +2,10 @@
 #include <map>
 #include <chrono>
 #include <string>
+#include <queue>
+#include <functional>
+#include <set>
+#include <thread>
 
 /*--------------------------------------------------------------------------
  * Exchange data structures
@@ -58,4 +62,91 @@ struct ConditionalOrder {
     char        type;       // 'S' = stop-loss, 'T' = take-profit
     uint32_t    qty;
     double      triggerPrice;
+};
+
+/*-------------------------------------------------------------------------
+* threadWrapper
+* 
+* A utility class that wraps a std::thread and automatically
+* 
+* 1. Executes a given functiion in a seperate thread
+* 2. Tracks when the thread has finished execution
+* 3. Ensures the thread is joined when the object is destroyed (RAII)
+* 
+* Used to:
+* - Manage it's own's thread completion
+*--------------------------------------------------------------------------*/
+class threadWrapper {
+private:
+
+	// Function object. It takes in a reference to the
+	// finish signal of the threadWrapper class.
+	// It then calls the function, and sets the signal
+	// to true after the function finishes.
+    struct Wrap {
+        bool& signal;
+        std::function<void()> fun;
+
+        template <typename Func, typename... T>
+        Wrap(bool& sig, Func&& f, T&&... t) : signal{ sig } {
+            fun = std::bind(f, t...);
+        }
+        void operator()() {
+            fun();
+            signal = true;
+        }
+    };
+
+public:
+    bool finishSignal{ false };
+    Wrap w;
+    std::thread th;
+
+    template <typename Func, typename... T>
+    threadWrapper(Func&& f, T&&... t) : w(finishSignal, std::forward<Func>(f), std::forward<T>(t)...), th(w) {}
+
+    // Automatically join upon object leaving scope.
+    ~threadWrapper() { th.join(); }
+};
+
+bool operator<(const threadWrapper& t1, const threadWrapper& t2) { return t1.th.get_id() < t2.th.get_id(); }
+
+
+/*-------------------------------------------------------------------------
+* threadPool
+*
+* A utility class that manages a group of threadWrappers
+*
+* 1. Stores a max amount of concurrent threads
+* 2. Tracks when a thread has finished execution and removes it from storage
+* 3. Queues up excess threads to be pushed into storage once space is freed up
+*
+* Used to:
+* - Manage multiple threads
+* - Track which threads have completed
+* - Safely clean up finished threads
+* - Queue up threads exceeding the limit
+*--------------------------------------------------------------------------*/
+class threadPool {
+    std::set<threadWrapper> threadpool;
+    std::queue<std::function<void()>> threadQueue;
+    uint32_t maxThreads;
+    std::thread updateThread;
+    bool stopped{ false };
+public:
+
+    threadPool(uint32_t count);
+
+    ~threadPool();
+
+    template <typename Func, typename... T>
+    void addThread(Func&& f, T&&... t) {
+        if (threadpool.size() < maxThreads) threadpool.emplace(f, t...);
+        else threadQueue.push(std::bind(f, t...));
+    }
+
+    void stopAll();
+
+    void update();
+
 };
