@@ -20,3 +20,8 @@ Release
 /build/*
 /out/build/*
 /android/.idea
+*.vcxproj.user
+*.sln
+*.vcxproj
+*.vcxproj.filters
+src/Client/ftxui/

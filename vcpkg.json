@@ -13,7 +13,8 @@
     },
     "glm",
     "implot",
-    "rapidjson"
+    "rapidjson",
+    "ftxui"
   ],
   "overrides":[
     { "name": "imgui", "version": "1.91.9#0" },

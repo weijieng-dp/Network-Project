@@ -1,22 +1,16 @@
 cmake_minimum_required(VERSION 3.5)
 
-#find files with extension of .cpp and .h
-file(GLOB_RECURSE Engine_source_files CONFIGURE_DEPENDS
-    ${CMAKE_CURRENT_LIST_DIR}/*.[ch]pp
-    ${CMAKE_CURRENT_LIST_DIR}/*.h
+# Find all .cpp, .h, .hpp files in the src subdirectory
+file(GLOB_RECURSE Client_source_files CONFIGURE_DEPENDS
+    ${CMAKE_CURRENT_LIST_DIR}/src/*.[ch]pp
+    ${CMAKE_CURRENT_LIST_DIR}/src/*.h
+    ${CMAKE_CURRENT_LIST_DIR}/src/*.cpp
 )
 
-
-#adding project
 add_executable(Client
-    ${Engine_source_files}
-    #${imgui_source_files}
+    ${Client_source_files}
 )
-
-
 
 target_link_libraries(Client PRIVATE
-   opengl32.lib
+   ws2_32
 )
-# Debug & Release DLLs
-
