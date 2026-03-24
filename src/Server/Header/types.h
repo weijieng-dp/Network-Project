@@ -1,5 +1,7 @@
+#pragma once
 #include <map>
 #include <chrono>
+#include <string>
 
 /*--------------------------------------------------------------------------
  * Exchange data structures

@@ -1,9 +1,14 @@
 // static class to store all global variables.
+#pragma once
+#include "WinSock2.h"
+#include "Windows.h"
+#include "ws2tcpip.h"
+#pragma comment(lib, "ws2_32.lib")
+
 #include <mutex>
 #include <unordered_map>
 #include <deque>
-#include "Windows.h"
-#include "ws2tcpip.h"
+
 #include "types.h"
 
 class Global {

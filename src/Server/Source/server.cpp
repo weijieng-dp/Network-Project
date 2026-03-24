@@ -161,51 +161,11 @@ static bool sendServerMsg(SOCKET s, const std::string& msg) {
 static std::string hashPassword(const std::string& user, const std::string& pass) {
     std::string salted = user + ":" + pass;
     uint64_t hash = 5381;
-    for(char c : salted) hash = ((hash << 5) + hash) + (uint8_t)c;
+    for (char c : salted) hash = ((hash << 5) + hash) + (uint8_t)c;
     std::ostringstream ss;
     ss << std::hex << std::setfill('0') << std::setw(16) << hash;
     return ss.str();
 }
-
-///*--------------------------------------------------------------------------
-// * Global exchange state  (protected by Global::exMtx)
-// *--------------------------------------------------------------------------*/
-//
-//static std::mutex Global::exMtx;   // guards all exchange state below
-//
-//static std::unordered_map<std::string,Account>   Global::accounts;
-//static std::unordered_map<std::string,OrderBook> Global::books;
-//static std::vector<Trade>                         Global::allTrades;
-//static std::unordered_map<uint64_t,Order>         Global::liveOrders;
-//static std::atomic<uint64_t> Global::nextOrderId{1}, Global::nextTradeId{1};
-//
-//// Map username -> TCP socket (for pushing TRADE_EXEC to counterparty)
-//static std::unordered_map<std::string,SOCKET> Global::userSockets;
-//static std::mutex Global::userSockMtx;
-//
-///*--------------------------------------------------------------------------
-// * UDP broadcast state
-// *--------------------------------------------------------------------------*/
-//
-//static SOCKET Global::udpSocket = INVALID_SOCKET;
-//static std::atomic<uint32_t> Global::udpSeq{1};
-//
-//struct UdpSubscriber { sockaddr_in addr; };
-//static std::mutex              Global::subMtx;
-//static std::vector<UdpSubscriber> Global::subscribers;
-//
-//struct BroadcastItem { std::vector<char> payload; };
-//static std::mutex              Global::bcastMtx;
-//static std::condition_variable Global::bcastCV;
-//static std::deque<BroadcastItem> Global::bcastQueue;
-//
-///*--------------------------------------------------------------------------
-// * Persistence path + print mutex
-// *--------------------------------------------------------------------------*/
-//
-//static std::string Global::persistPath;
-//static std::mutex  Global::printMtx;
-//static std::atomic<bool> Global::running{true};
 
 /*--------------------------------------------------------------------------
  * Broadcast server message to ALL connected clients
