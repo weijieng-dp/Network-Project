@@ -5,10 +5,10 @@
  *--------------------------------------------------------------------------*/
 enum CmdID : uint8_t {
     // Client -> Server
-    CMD_LOGIN = 0x01, CMD_LOGOUT = 0x02,
-    CMD_PLACE_ORDER = 0x03, CMD_CANCEL_ORDER = 0x04,
-    CMD_QUERY_MARKET = 0x05, CMD_QUERY_ACCOUNT = 0x06,
-    CMD_QUERY_ORDERS = 0x07, CMD_QUERY_TRADES = 0x08,
+    CMD_LOGIN = 0x01,           CMD_LOGOUT = 0x02,
+    CMD_PLACE_ORDER = 0x03,     CMD_CANCEL_ORDER = 0x04,
+    CMD_QUERY_MARKET = 0x05,    CMD_QUERY_ACCOUNT = 0x06,
+    CMD_QUERY_ORDERS = 0x07,    CMD_QUERY_TRADES = 0x08,
     CMD_SUB_MARKET = 0x09,
     CMD_QUERY_HISTORY = 0x0A,
     CMD_CRISIS = 0x0B,
@@ -17,13 +17,13 @@ enum CmdID : uint8_t {
     CMD_QUERY_STOPS = 0x0E,
     CMD_CANCEL_STOP = 0x0F,
     // Server -> Client
-    CMD_LOGIN_OK = 0x81, CMD_LOGIN_FAIL = 0x82,
-    CMD_ORDER_ACK = 0x83, CMD_ORDER_REJECT = 0x84,
-    CMD_TRADE_EXEC = 0x85, CMD_CANCEL_ACK = 0x86,
-    CMD_CANCEL_REJECT = 0x87, CMD_MARKET_DATA = 0x88,
-    CMD_ACCOUNT_DATA = 0x89, CMD_SERVER_MSG = 0x8A,
-    CMD_LOGOUT_OK = 0x8B, CMD_ORDER_LIST = 0x8C,
-    CMD_TRADE_LIST = 0x8D, CMD_HISTORY_DATA = 0x8E,
+    CMD_LOGIN_OK = 0x81,        CMD_LOGIN_FAIL = 0x82,
+    CMD_ORDER_ACK = 0x83,       CMD_ORDER_REJECT = 0x84,
+    CMD_TRADE_EXEC = 0x85,      CMD_CANCEL_ACK = 0x86,
+    CMD_CANCEL_REJECT = 0x87,   CMD_MARKET_DATA = 0x88,
+    CMD_ACCOUNT_DATA = 0x89,    CMD_SERVER_MSG = 0x8A,
+    CMD_LOGOUT_OK = 0x8B,       CMD_ORDER_LIST = 0x8C,
+    CMD_TRADE_LIST = 0x8D,      CMD_HISTORY_DATA = 0x8E,
 };
 
 /*--------------------------------------------------------------------------

@@ -11,7 +11,7 @@
  * Persistence
  *--------------------------------------------------------------------------*/
 
-void persistData() {
+void writePersistentData() {
     std::string logMsg;
     {
         std::lock_guard<std::mutex> lk(Global::exMtx);
@@ -49,7 +49,7 @@ void persistData() {
     std::cout << logMsg << "\n";
 }
 
-void loadData() {
+void loadPersistentData() {
     // --- Load accounts ---
     std::ifstream fa(Global::persistPath + "\\accounts.dat");
     if (fa.is_open()) {

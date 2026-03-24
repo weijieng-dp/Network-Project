@@ -1,4 +1,4 @@
 #pragma once
 
-void persistData();
-void loadData();
+void writePersistentData();
+void loadPersistentData();

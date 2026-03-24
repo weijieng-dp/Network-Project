@@ -39,11 +39,11 @@ public:
 	static SOCKET udpSocket;
 	static std::atomic<uint32_t> udpSeq;
 
-	struct UdpSubscriber { sockaddr_in addr; };
+	struct UdpSubscriber { sockaddr_in addr; };				// !! needs changing
 	static std::mutex              subMtx;
 	static std::vector<UdpSubscriber> subscribers;
 
-	struct BroadcastItem { std::vector<char> payload; };
+	struct BroadcastItem { std::vector<char> payload; };	// !! needs changing
 	static std::mutex              bcastMtx;
 	static std::condition_variable bcastCV;
 	static std::deque<BroadcastItem> bcastQueue;
