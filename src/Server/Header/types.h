@@ -109,7 +109,7 @@ public:
     ~threadWrapper() { th.join(); }
 };
 
-bool operator<(const threadWrapper& t1, const threadWrapper& t2) { return t1.th.get_id() < t2.th.get_id(); }
+inline bool operator<(const threadWrapper& t1, const threadWrapper& t2) { return t1.th.get_id() < t2.th.get_id(); }
 
 
 /*-------------------------------------------------------------------------

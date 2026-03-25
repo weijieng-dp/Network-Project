@@ -95,6 +95,14 @@ target_link_libraries(Client
 	ws2_32
 )
 
+target_include_directories(Server PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Shared
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Server/Header
+)
+
+target_include_directories(Client PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/Shared
+)
 target_include_directories(Client PRIVATE
 ${RAPIDJSON_INCLUDE_DIRS}
 )
