@@ -236,6 +236,7 @@ static void onCancelAck(const char* b, int n, int o) {
     uint64_t oid=0; readU64(b,n,o,oid);
     { std::lock_guard<std::mutex> lk(g_stateMtx); g_openOrders.erase(oid); }
     logMsg("ORDER #" + std::to_string(oid) + " CANCELLED");
+    sendFrame(g_tcpSocket, CMD_QUERY_ACCOUNT, {});
     refreshUI();
 }
 
