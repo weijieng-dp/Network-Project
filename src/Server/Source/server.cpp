@@ -252,7 +252,7 @@ static void seedMarketMaker() {
     // If the EXCHANGE account was already loaded from persistence, skip seeding
     // to avoid duplicating orders and inflating the account on every restart.
     if (Global::accounts.count(HOUSE_USER)) {
-        std::cout << "[HOUSE] EXCHANGE account found in persisted data — skipping seed.\n";
+        std::cout << "[HOUSE] EXCHANGE account found in persisted data skipping seed.\n";
         std::cout << "[HOUSE] Cash: $" << std::fixed << std::setprecision(2)
             << Global::accounts[HOUSE_USER].cash << ", holdings: ";
         for (auto& [sym, qty] : Global::accounts[HOUSE_USER].holdings) std::cout << sym << "=" << qty << " ";
@@ -293,7 +293,7 @@ static void seedMarketMaker() {
         }
     }
 
-    std::cout << "[HOUSE] Market maker seeded — " << Global::SYMBOLS.size() * MM_DEPTH_LEVELS * 2
+    std::cout << "[HOUSE] Market maker seeded " << Global::SYMBOLS.size() * MM_DEPTH_LEVELS * 2
         << " orders placed (" << MM_DEPTH_LEVELS << " levels/side).\n\n";
 }
 
@@ -595,8 +595,8 @@ static void checkConditionalOrders(const std::string& sym) {
         acc.holdings[sym] -= sellQty;
         if (acc.holdings[sym] == 0) acc.holdings.erase(sym);
 
-        // Use best bid price for the market sell (like real platforms)
-        double sellPrice = book.bids.empty() ? 0.01 : book.bids.begin()->first;
+        // Use lowest bid to sweep all levels (market sell)
+        double sellPrice = book.bids.empty() ? 0.01 : book.bids.rbegin()->first;
 
         uint64_t oid = Global::nextOrderId.fetch_add(1);
         Order sord;
@@ -1243,9 +1243,8 @@ static void clientSession(SOCKET sock) {
             // Re-quote MM after matching (deferred to avoid iterator invalidation)
             requoteMarketMaker(sym);
             checkConditionalOrders(sym);
-            // Refund unused reservation
-            if (side == 'B')  acc.cash += ord.qty * price;
-            else if (ord.qty > 0) acc.holdings[sym] += ord.qty;
+            // Resources stay reserved while order rests in the book.
+            // The cancel handler refunds on cancellation; recordTrade handles fills.
             break;
         }
 
@@ -1281,8 +1280,8 @@ static void clientSession(SOCKET sock) {
             if (!Global::books.count(sym)) { sendServerMsg(sock, "Unknown symbol: " + sym); break; }
             auto& book = Global::books[sym];
             double bid = 0, ask = 0, last = book.lastPrice; uint32_t bidQty = 0, askQty = 0, vol = book.volume;
-            if (!book.bids.empty()) { bid = book.bids.begin()->first; for (auto& [id, o] : book.bids.begin()->second) bidQty += o.qty; }
-            if (!book.asks.empty()) { ask = book.asks.begin()->first; for (auto& [id, o] : book.asks.begin()->second) askQty += o.qty; }
+            if (!book.bids.empty()) { bid = book.bids.begin()->first; for (auto& [id, ord] : book.bids.begin()->second) bidQty += ord.qty; }
+            if (!book.asks.empty()) { ask = book.asks.begin()->first; for (auto& [id, ord] : book.asks.begin()->second) askQty += ord.qty; }
             std::vector<char> p; pushStr1(p, sym); pushDouble(p, bid); pushU32(p, bidQty); pushDouble(p, ask); pushU32(p, askQty); pushDouble(p, last); pushU32(p, vol);
             sendFrame(sock, CMD_MARKET_DATA, p);
             break;

@@ -456,12 +456,14 @@ static void cmdLogin(const std::string& user, const std::string& pass) {
 }
 static void cmdLogout() { sendFrame(g_tcpSocket,CMD_LOGOUT,{}); }
 static void cmdPlaceOrder(char side, const std::string& sym, uint32_t qty, double price) {
+    if(!g_loggedIn){logMsg("Must be logged in."); return;}
     if(sym.empty()||qty==0||price<=0){logMsg(std::string("Usage: ")+(side=='B'?"/buy":"/sell")+" <SYM> <qty> <price>"); return;}
     std::vector<char> p; pushU8(p,side=='B'?0:1); pushStr1(p,sym); pushU32(p,qty); pushDouble(p,price);
     sendFrame(g_tcpSocket,CMD_PLACE_ORDER,p);
     logMsg("Sending " + std::string(side=='B'?"BUY ":"SELL ") + std::to_string(qty) + "x" + sym + " @ " + fmtPrice(price));
 }
 static void cmdCancelOrder(uint64_t oid) {
+    if(!g_loggedIn){logMsg("Must be logged in."); return;}
     std::vector<char> p; pushU64(p,oid); sendFrame(g_tcpSocket,CMD_CANCEL_ORDER,p);
     logMsg("Cancelling order #" + std::to_string(oid));
 }
