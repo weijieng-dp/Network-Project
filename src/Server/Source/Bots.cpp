@@ -38,7 +38,7 @@ void Bot::InitBot(double currentPriceMarket, std::string botName,bool isMarketMa
 	else
 	{
 		bot = Strategy::Mean_Reversion;
-		Global::accounts[botName].cash = 10000;
+		Global::accounts[botName].cash = 50000;
 		Global::accounts[botName].holdings[Symbol] = 100;
 	}
 
@@ -213,30 +213,19 @@ void BotManager::MeanReversionStrategy(Bot& bot,
 	auto& book = Global::books[bot.Symbol];
 	auto& house = Global::accounts[bot.botname];
 
-	// Use book's last trade price as current, MM's lastPriceSeen as reference
-	// Find the paired MM for this symbol to get its current midprice
 	double mmMidprice = 0.0;
 	for (int i = 0; i < 1; i++)
-	{
 		if (MarketMakers[i].Symbol == bot.Symbol)
 		{
-			mmMidprice = MarketMakers[i].lastPriceSeen;
-			break;
+			mmMidprice = MarketMakers[i].lastPriceSeen; break;
 		}
-	}
 	if (mmMidprice <= 0) return;
 
 	double reference = bot.lastPriceSeen;
 	double deviation = (mmMidprice - reference) / reference;
 
-	std::cout << "[MR DEBUG] " << bot.botname
-		<< " mmMid=" << std::fixed << std::setprecision(4) << mmMidprice
-		<< " ref=" << reference
-		<< " dev=" << deviation
-		<< " cash=" << house.cash
-		<< " holdings=" << house.holdings[bot.Symbol]
-		<< " bids=" << book.bids.size()
-		<< " asks=" << book.asks.size() << "\n";
+	// Always update reference so it doesn't get permanently stale
+	bot.lastPriceSeen = mmMidprice;
 
 	if (std::abs(deviation) < 0.001) return;
 
