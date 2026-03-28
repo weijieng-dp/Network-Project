@@ -62,7 +62,7 @@ public:
     void ProcessMarketMaker(std::function<void(Order& ord, OrderBook& book)>);
 
     static std::array<Bot, TotalBots> bots; // momentum, mean-reversion
-    static std::array<Bot, 1> MarketMakers; // momentum, mean-reversion
+    static std::array<Bot, 5> MarketMakers; // momentum, mean-reversion
 
 private:
 };

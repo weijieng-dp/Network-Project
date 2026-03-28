@@ -12,6 +12,7 @@ std::atomic<int>						CrisisManager::currState(0);
 CrisisManager::time						CrisisManager::cooldownTime;
 CrisisManager::time						CrisisManager::timeSinceCrisis;
 CrisisManager::time						CrisisManager::startTime;
+CrisisManager::time						CrisisManager::prevTime;
 CrisisManager::time						CrisisManager::crisisDuration;
 
 std::mt19937							CrisisManager::gen;
@@ -40,10 +41,10 @@ void CrisisManager::Init() {
 	using parami = std::uniform_int_distribution<uint32_t>::param_type;
 
 	randCrisis.param(parami(0, MAX_CRISIS_MS));
-	shockDur.param(parami(CRISIS_SHOCK_MS * 0.75, CRISIS_SHOCK_MS * 1.25));
-	panicDur.param(parami(CRISIS_PANIC_MS * 0.75, CRISIS_PANIC_MS * 1.25));
-	crazeDur.param(parami(CRISIS_CRAZE_MS * 0.75, CRISIS_CRAZE_MS * 1.25));
-	randDur.param(parami(CRISIS_RAND_MS * 0.25, CRISIS_RAND_MS * 1.75));
+	shockDur.param(parami((uint32_t)(CRISIS_SHOCK_MS * 0.75), (uint32_t)(CRISIS_SHOCK_MS * 1.25)));
+	panicDur.param(parami((uint32_t)(CRISIS_PANIC_MS * 0.75), (uint32_t)(CRISIS_PANIC_MS * 1.25)));
+	crazeDur.param(parami((uint32_t)(CRISIS_CRAZE_MS * 0.75), (uint32_t)(CRISIS_CRAZE_MS * 1.25)));
+	randDur.param(parami((uint32_t)(CRISIS_RAND_MS * 0.25), (uint32_t)(CRISIS_RAND_MS * 1.75)));
 }
 
 void CrisisManager::Update() {

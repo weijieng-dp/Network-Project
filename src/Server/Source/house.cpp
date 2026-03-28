@@ -135,13 +135,19 @@ bool postHouseOrder(const std::string& sym, char side, double price, uint32_t qt
 
     uint64_t oid = Global::nextOrderId.fetch_add(1);
     Order ord;
-    ord.orderId = oid; ord.username = Global::HOUSE_USER; ord.side = side;
-    ord.symbol = sym; ord.qty = qty; ord.origQty = qty; ord.price = price;
+
+    ord.orderId = oid; 
+    ord.username = Global::HOUSE_USER;
+    ord.side = side;
+    ord.symbol = sym; 
+    ord.qty = qty; 
+    ord.origQty = qty; 
+    ord.price = price;
     ord.ts = std::chrono::steady_clock::now();
 
     OrderBook& book = Global::books[sym];
     if (side == 'B') book.bids[price][oid] = ord;
-    else            book.asks[price][oid] = ord;
+    else             book.asks[price][oid] = ord;
     Global::liveOrders[oid] = ord;
     house.openOrders[oid] = ord;
 

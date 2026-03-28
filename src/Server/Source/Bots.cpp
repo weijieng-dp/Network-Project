@@ -11,7 +11,7 @@
 #include <random>
 
 std::array<Bot, TotalBots> BotManager::bots{}; // momentum, mean-reversion
-std::array<Bot, 1> BotManager::MarketMakers{}; // momentum, mean-reversion
+std::array<Bot, 5> BotManager::MarketMakers{}; // momentum, mean-reversion
 
 
 void Bot::InitBot(double currentPriceMarket, std::string botName,bool isMarketMaker)
@@ -32,8 +32,8 @@ void Bot::InitBot(double currentPriceMarket, std::string botName,bool isMarketMa
 	if (isMarketMaker)
 	{
 		bot = Strategy::MarketMaker;
-		Global::accounts[botName].cash = 500000;
-		Global::accounts[botName].holdings[Symbol] = 10000;
+		Global::accounts["MarketMaker_" + botName].cash = 500000;
+		Global::accounts["MarketMaker_" + botName].holdings[botName] = 10000;
 	}
 	else
 	{
@@ -123,9 +123,9 @@ void BotManager::InitBots(double currentPriceMarket)
 
 void BotManager::InitMarketMaker(double currentPriceMarket)
 {
-	for (int i = 0; i < 1; i++)
+	for (int i = 0; i < 5; i++)
 	{
-		MarketMakers[i].InitBot(currentPriceMarket, "MarketMaker_" + std::to_string(i),true);
+		MarketMakers[i].InitBot(currentPriceMarket, Global::SYMBOLS[i], true);
 	}
 }
 
@@ -388,7 +388,7 @@ void BotManager::ProcessStrategies(std::function<void(Order& ord, OrderBook& boo
 
 void BotManager::ProcessMarketMaker(std::function<void(Order& ord, OrderBook& book)> matchingfunction)
 {
-	for (int i = 0; i < 1; i++)
+	for (int i = 0; i < 5; i++)
 	{
 		auto& book = Global::books[MarketMakers[i].Symbol];
 		Account& house = Global::accounts[MarketMakers[i].botname];

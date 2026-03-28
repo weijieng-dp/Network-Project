@@ -1,6 +1,6 @@
 #include "global.h"
 
-std::vector<std::string>					Global::SYMBOLS{ "AAPL" };
+std::vector<std::string>					Global::SYMBOLS{ "AAPL","GOOGL","MSFT","TSLA","AMZN" };
 
 std::mutex									Global::exMtx;   
 
