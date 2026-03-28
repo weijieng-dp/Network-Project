@@ -31,3 +31,5 @@ std::atomic<bool>							Global::running{ true };
 
 std::vector<ConditionalOrder>				Global::conditionalOrders;
 std::atomic<uint64_t>						Global::nextCondId{ 1 };
+
+std::string									Global::HOUSE_USER{ "EXCHANGE" };

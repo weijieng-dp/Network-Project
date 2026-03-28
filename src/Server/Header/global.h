@@ -62,4 +62,9 @@ public:
 	static std::vector<ConditionalOrder> conditionalOrders;
 	static std::atomic<uint64_t> nextCondId;
 
+	/*--------------------------------------------------------------------------
+	 * House / Market-Maker account
+	 *--------------------------------------------------------------------------*/
+
+	static std::string HOUSE_USER;
 };
