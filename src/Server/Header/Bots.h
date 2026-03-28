@@ -4,7 +4,7 @@
 
 
 
-int const& TotalBots = 4;
+constexpr int TotalBots = 4;
 
 enum Strategy
 {
@@ -58,8 +58,9 @@ public:
     void PlaceOrder(Bot& bot,Order ord, char side);
     
     void ProcessStrategies(std::function<void(Order& ord, OrderBook& book)>);
+    void ProcessMarketMaker(std::function<void(Order& ord, OrderBook& book)>);
 
-    std::array<Bot, TotalBots> bots; // momentum, mean-reversion
+    static std::array<Bot, TotalBots> bots; // momentum, mean-reversion
 
 private:
 };

@@ -385,7 +385,7 @@ static void checkConditionalOrders(const std::string& sym) {
 
         matchOrders(sord, book);
         /***************************************************************put market maker logic here****************************************************************/
-       
+
 
         if (sord.qty > 0) {
             acc.holdings[sym] += sord.qty;
@@ -477,37 +477,11 @@ static void matchOrders(Order& ord, OrderBook& book) {
 
 static std::ofstream csvFile;
 
-static void initCSV()
-{
-    csvFile.open("MarketData/AAPL.csv");
-    csvFile << "Date,Open,High,Low,Close,Volume\n";
-}
+struct csvdata {
+   
+};
 
-static void exportLatestCandle(const std::string& sym)
-{
-    static std::string lastExportedLabel;
 
-    auto& book = Global::books[sym];
-    auto candles = buildCandles(book.tradeLog);
-
-    if (candles.empty()) return;
-
-    auto& c = candles.back();
-
-    // prevent duplicate writes
-    if (c.label == lastExportedLabel) return;
-
-    lastExportedLabel = c.label;
-
-    csvFile << c.label << ","
-        << c.open << ","
-        << c.high << ","
-        << c.low << ","
-        << c.close << ","
-        << c.vol << "\n";
-
-    csvFile.flush();
-}
 
 /**
  * @brief Background thread that periodically submits small random orders
@@ -523,21 +497,15 @@ static void simulationThread() {
     
     while (Global::running.load())
     {
-       
-        for (int i = 0; i < TotalBots; i++)
         {
-            Bot& bot = BotManager::Instance().bots[i];
-            switch (bot.bot)
-            {
-            case MarketMaker:
-               // BotManager::Instance().MarketMakerStrategy(bot,)
-               // postHouseOrder()
-                break;
-            default:
-                break;
-            }
+            std::lock_guard<std::mutex> lk(Global::exMtx);
+
+            BotManager::Instance().ProcessMarketMaker(matchOrders);
         }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
     }
+
 }
 
 /*--------------------------------------------------------------------------
@@ -757,7 +725,7 @@ static void clientSession(SOCKET sock) {
             matchOrders(ord, Global::books[sym]);
             // Re-quote MM after matching (deferred to avoid iterator invalidation)
         /***************************************************************put market maker logic here****************************************************************/
-
+ 
             checkConditionalOrders(sym);
             // Refund unused reservation
             if (side == 'B')  acc.cash += ord.qty * price;
@@ -1087,11 +1055,12 @@ int main() {
     // --- Step 6b: Seed house/market-maker account with initial quotes ---
     //seedMarketMaker();
     //seedBotAccounts();
+    
+    BotManager::Instance().InitBots(
+        Global::books["AAPL"].lastPrice > 0
+        ? Global::books["AAPL"].lastPrice
+        : 100.0);
 
-
-    initCSV();
-
-    exportLatestCandle("AAPL");
     // --- Step 7: Start background threads ---
     std::thread bcastThr(udpBroadcastThread);
     std::thread persThr(persistThread);

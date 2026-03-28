@@ -10,6 +10,7 @@
 #include "types.h"
 #include <random>
 
+std::array<Bot, TotalBots> BotManager::bots{}; // momentum, mean-reversion
 
 
 void Bot::InitBot(double currentPriceMarket, std::string botName)
@@ -23,10 +24,10 @@ void Bot::InitBot(double currentPriceMarket, std::string botName)
 	std::uniform_real_distribution<float> mw(0.2f, 1.0f);
 	std::uniform_real_distribution<float> mrw(0.2f, 1.0f);
 	std::uniform_real_distribution<float> hw(0.0f, 1.0f);
-	bot = static_cast<Strategy>(dist(rng));
+	bot = Strategy::MarketMaker;/*static_cast<Strategy>(dist(rng));*/
 
 
-	Symbol = sym(rng);
+	Symbol = Symbol = Global::SYMBOLS[sym(rng)];
 	Global::accounts[botName].cash = 10000;
 	Global::accounts[botName].username = botName;
 	Global::accounts[botName].holdings[Symbol] = hold(rng);
@@ -271,6 +272,24 @@ void BotManager::ProcessStrategies(std::function<void(Order& ord, OrderBook& boo
 
 		case Trend_Following:
 			break;
+		case HerdBehavior:
+			break;
+		case PanicSelling:
+			break;
+		}
+	}
+}
+
+void BotManager::ProcessMarketMaker(std::function<void(Order& ord, OrderBook& book)> matchingfunction)
+{
+	for (int i = 0; i < TotalBots; i++)
+	{
+		auto& book = Global::books[bots[i].Symbol];
+		Account& house = Global::accounts[bots[i].botname];
+
+		CancelOrder(bots[i]);
+		switch (bots[i].bot)
+		{
 		case MarketMaker:
 		{
 			double bid = book.bids.empty() ? 0.0 : book.bids.begin()->first;
@@ -281,15 +300,9 @@ void BotManager::ProcessStrategies(std::function<void(Order& ord, OrderBook& boo
 			PlaceOrder(bots[i], orders[0], 'B');
 			PlaceOrder(bots[i], orders[1], 'S');
 			matchingfunction(orders[0], Global::books[bots[i].Symbol]);
-			matchingfunction(orders[1],Global::books[bots[i].Symbol]);
+			matchingfunction(orders[1], Global::books[bots[i].Symbol]);
 		}
-			break;
-
-		case HerdBehavior:
-			break;
-		case PanicSelling:
-			break;
-		default:
+		break;
 		}
 	}
 }
