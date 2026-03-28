@@ -268,8 +268,13 @@ static void pushTradeExec(const std::string& username, uint64_t orderId,
     if (sock == INVALID_SOCKET) return;
 
     std::vector<char> p;
-    pushU64(p, orderId); pushU32(p, fillQty); pushDouble(p, fillPx);
-    pushU32(p, remQty); pushStr1(p, sym);
+
+    pushU64(p, orderId); 
+    pushU32(p, fillQty); 
+    pushDouble(p, fillPx);
+    pushU32(p, remQty); 
+    pushStr1(p, sym);
+
     sendFrame(sock, CMD_TRADE_EXEC, p);
 }
 
@@ -283,17 +288,22 @@ static void matchOrders(Order& ord, OrderBook& book);
 static void recordTrade(const std::string& sym, uint32_t fill, double fillPx,
     Order& buyOrd, Order& sellOrd) {
     Trade tr;
-    tr.tradeId = Global::nextTradeId.fetch_add(1); tr.symbol = sym;
-    tr.qty = fill; tr.price = fillPx;
-    tr.buyUser = buyOrd.username; tr.sellUser = sellOrd.username;
-    tr.datetime = nowString();
+    tr.tradeId =    Global::nextTradeId.fetch_add(1); 
+    tr.symbol =     sym;
+    tr.qty =        fill; 
+    tr.price =      fillPx;
+    tr.buyUser =    buyOrd.username;
+    tr.sellUser =   sellOrd.username;
+    tr.datetime =   nowString();
+
     Global::allTrades.push_back(tr);
 
     auto& book_ref = Global::books[sym];
     // Update MM volatility (EMA of price change magnitude)
     if (book_ref.lastPrice > 0) {
-        double pctChange = std::abs(fillPx - book_ref.lastPrice) / (std::max)(book_ref.lastPrice, 0.01);
+        double pctChange = std::abs(fillPx - book_ref.lastPrice) / std::max(book_ref.lastPrice, 0.01);
         book_ref.mmVolatility = book_ref.mmVolatility * 0.95 + pctChange * 100.0 * 0.05;
+
         if (book_ref.mmVolatility < 0.2) book_ref.mmVolatility = 0.2;
         if (book_ref.mmVolatility > 5.0) book_ref.mmVolatility = 5.0;
     }
@@ -335,6 +345,7 @@ static void recordTrade(const std::string& sym, uint32_t fill, double fillPx,
 
     uint32_t buyRem = buyOrd.qty - fill;
     uint32_t sellRem = sellOrd.qty - fill;
+
     pushTradeExec(buyOrd.username, buyOrd.orderId, fill, fillPx, buyRem, sym);
     pushTradeExec(sellOrd.username, sellOrd.orderId, fill, fillPx, sellRem, sym);
     enqueueBroadcast(sym);
@@ -375,10 +386,16 @@ static void checkConditionalOrders(const std::string& sym) {
 
         uint64_t oid = Global::nextOrderId.fetch_add(1);
         Order sord;
-        sord.orderId = oid; sord.username = co.username; sord.side = 'S';
-        sord.symbol = sym; sord.qty = sellQty; sord.origQty = sellQty;
-        sord.price = sellPrice;
-        sord.ts = std::chrono::steady_clock::now();
+
+        sord.orderId =      oid; 
+        sord.username =     co.username; 
+        sord.side =         'S';
+        sord.symbol =       sym; 
+        sord.qty =          sellQty; 
+        sord.origQty =      sellQty;
+        sord.price =        sellPrice;
+        sord.ts =           std::chrono::steady_clock::now();
+
         acc.openOrders[oid] = sord;
 
         matchOrders(sord, book);
@@ -386,26 +403,35 @@ static void checkConditionalOrders(const std::string& sym) {
 
         if (sord.qty > 0) {
             acc.holdings[sym] += sord.qty;
+
             if (Global::liveOrders.count(oid)) {
+
                 book.asks[sord.price].erase(oid);
                 if (book.asks[sord.price].empty()) book.asks.erase(sord.price);
                 Global::liveOrders.erase(oid);
+
             }
+
             acc.openOrders.erase(oid);
         }
 
         uint32_t filled = sellQty - sord.qty;
         std::string typeStr = (co.type == 'S') ? "STOP-LOSS" : "TAKE-PROFIT";
+
         {
             SOCKET usock = INVALID_SOCKET;
             std::lock_guard<std::mutex> lk2(Global::userSockMtx);
             auto it2 = Global::userSockets.find(co.username);
+
             if (it2 != Global::userSockets.end()) usock = it2->second;
+
             if (usock != INVALID_SOCKET) {
+
                 std::ostringstream oss;
                 oss << typeStr << " TRIGGERED: sold " << filled << "x" << sym
                     << " @ $" << std::fixed << std::setprecision(2) << lastPx
                     << " (trigger was $" << co.triggerPrice << ")";
+
                 if (sord.qty > 0) oss << " [" << sord.qty << " unfilled]";
                 sendServerMsg(usock, oss.str());
             }
@@ -428,29 +454,53 @@ static void checkConditionalOrders(const std::string& sym) {
 static void matchOrders(Order& ord, OrderBook& book) {
     if (ord.side == 'B') {
         for (auto lvlIt = book.asks.begin(); lvlIt != book.asks.end() && ord.qty > 0;) {
+
             if (ord.price < lvlIt->first) break;
+
             auto& lvl = lvlIt->second;
+
             for (auto oit = lvl.begin(); oit != lvl.end() && ord.qty > 0;) {
+
                 Order& r = oit->second;
                 uint32_t fill = std::min(ord.qty, r.qty);
                 recordTrade(ord.symbol, fill, lvlIt->first, ord, r);
-                ord.qty -= fill; r.qty -= fill; Global::liveOrders[r.orderId].qty = r.qty;
-                if (r.qty == 0) { Global::liveOrders.erase(r.orderId); oit = lvl.erase(oit); }
+
+                ord.qty -= fill; 
+                r.qty -= fill; 
+                Global::liveOrders[r.orderId].qty = r.qty;
+
+                if (r.qty == 0) { 
+                    Global::liveOrders.erase(r.orderId); 
+                    oit = lvl.erase(oit); 
+                }
                 else ++oit;
+
             }
+
             if (lvl.empty()) lvlIt = book.asks.erase(lvlIt); else ++lvlIt;
         }
     }
     else {
         for (auto lvlIt = book.bids.begin(); lvlIt != book.bids.end() && ord.qty > 0;) {
+
             if (ord.price > lvlIt->first) break;
+
             auto& lvl = lvlIt->second;
+
             for (auto oit = lvl.begin(); oit != lvl.end() && ord.qty > 0;) {
+
                 Order& r = oit->second;
                 uint32_t fill = std::min(ord.qty, r.qty);
                 recordTrade(ord.symbol, fill, lvlIt->first, r, ord);
-                ord.qty -= fill; r.qty -= fill; Global::liveOrders[r.orderId].qty = r.qty;
-                if (r.qty == 0) { Global::liveOrders.erase(r.orderId); oit = lvl.erase(oit); }
+
+                ord.qty -= fill; 
+                r.qty -= fill; 
+                Global::liveOrders[r.orderId].qty = r.qty;
+
+                if (r.qty == 0) { 
+                    Global::liveOrders.erase(r.orderId); 
+                    oit = lvl.erase(oit); 
+                }
                 else ++oit;
             }
             if (lvl.empty()) lvlIt = book.bids.erase(lvlIt); else ++lvlIt;
@@ -458,7 +508,7 @@ static void matchOrders(Order& ord, OrderBook& book) {
     }
     if (ord.qty > 0) {
         if (ord.side == 'B') book.bids[ord.price][ord.orderId] = ord;
-        else              book.asks[ord.price][ord.orderId] = ord;
+        else                 book.asks[ord.price][ord.orderId] = ord;
         Global::liveOrders[ord.orderId] = ord;
     }
 }
@@ -473,14 +523,18 @@ static void matchOrders(Order& ord, OrderBook& book) {
   */
 static void seedBotAccounts() {
     for (int i = 0; i < SIM_BOT_COUNT; ++i) {
+
         std::string name = "BOT_" + std::to_string(i + 1);
         if (!Global::accounts.count(name)) {
+
             Account& bot = Global::accounts[name];
             bot.username = name;
             bot.cash = 1e9;
             for (auto& sym : Global::SYMBOLS) bot.holdings[sym] = 500000;
+
         }
     }
+
     std::cout << "[SIM] " << SIM_BOT_COUNT << " bot accounts ready.\n";
 }
 
@@ -1295,7 +1349,7 @@ static void persistThread() {
  * main()
  *--------------------------------------------------------------------------*/
 
-int main() {
+int old_main() {
     // --- Step 1: Configuration ---
     std::string tcpPortStr, udpPortStr, persistPath;
     std::cout << "Server TCP Port Number: "; std::getline(std::cin, tcpPortStr);
@@ -1372,4 +1426,34 @@ int main() {
     closesocket(Global::udpSocket);
     WSACleanup();
     return 0;
+}
+
+
+int main() {
+
+    // Initialize IMGUI
+
+    // Read from a config file
+    // Read from persistent data file
+
+    // Initialize managers from config + persistent data
+
+    // Can probably start simulation already in a thread
+    
+    // If config file does not have port, prompt user for a port
+
+    // Threads to run:
+    // 1 thread for each client, can be handled by a form of ClientThreadManager
+    // 1 thread for bot simulation
+    // 1 thread for crisis simulation
+    // 1 thread to handle the buy + sell order logic
+    // 1 thread to store persistent data, in case of server crash etc.
+    // Main thread renders ImGUI, and can accept user input to trigger market events.
+
+    // Cleanup:
+    // Disconnect clients
+    // Write stuff back into config and persistent
+    // Close all threads
+
+    return old_main();
 }
