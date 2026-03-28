@@ -385,7 +385,8 @@ static void checkConditionalOrders(const std::string& sym) {
 
         matchOrders(sord, book);
         /***************************************************************put market maker logic here****************************************************************/
-
+        BotManager::Instance().ProcessMarketMaker(matchOrders);   // ← add
+        BotManager::Instance().ProcessStrategies(matchOrders);    // ← add
 
         if (sord.qty > 0) {
             acc.holdings[sym] += sord.qty;
@@ -501,6 +502,7 @@ static void simulationThread() {
             std::lock_guard<std::mutex> lk(Global::exMtx);
 
             BotManager::Instance().ProcessMarketMaker(matchOrders);
+            BotManager::Instance().ProcessStrategies(matchOrders);
         }
 
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
@@ -725,7 +727,8 @@ static void clientSession(SOCKET sock) {
             matchOrders(ord, Global::books[sym]);
             // Re-quote MM after matching (deferred to avoid iterator invalidation)
         /***************************************************************put market maker logic here****************************************************************/
- 
+            BotManager::Instance().ProcessMarketMaker(matchOrders);   // ← add
+            BotManager::Instance().ProcessStrategies(matchOrders);    // ← add
             checkConditionalOrders(sym);
             // Refund unused reservation
             if (side == 'B')  acc.cash += ord.qty * price;
@@ -1056,10 +1059,18 @@ int main() {
     //seedMarketMaker();
     //seedBotAccounts();
     
+
+    BotManager::Instance().InitMarketMaker(
+        Global::books["AAPL"].lastPrice > 0
+        ? Global::books["AAPL"].lastPrice
+        : 180.0);
+
     BotManager::Instance().InitBots(
         Global::books["AAPL"].lastPrice > 0
         ? Global::books["AAPL"].lastPrice
-        : 100.0);
+        : 180.0);
+
+
 
     // --- Step 7: Start background threads ---
     std::thread bcastThr(udpBroadcastThread);

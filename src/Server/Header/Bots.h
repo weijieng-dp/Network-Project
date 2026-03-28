@@ -8,10 +8,10 @@ constexpr int TotalBots = 4;
 
 enum Strategy
 {
-    Mean_Reversion = 0,
+    MarketMaker = 0,
     Trend_Following,
     Momentum,
-    MarketMaker,
+    Mean_Reversion,
     HerdBehavior,
     PanicSelling,
 
@@ -22,7 +22,7 @@ enum Strategy
 class Bot
 {
 public:
-    void InitBot(double currentPriceMarket, std::string botName);
+    void InitBot(double currentPriceMarket, std::string botName, bool isMarketMaker = false);
     Strategy bot;
     std::string botname;
     std::string Symbol;
@@ -47,11 +47,12 @@ public:
     }
 
     void InitBots(double currentPriceMarket);
+    void InitMarketMaker(double currentPriceMarket);
 
     std::array<Order,2> MarketMakerStrategy(Bot& bot, double const& bestbid, double const& bestask);
     void MomentumStrategy();
     void TrendFollowingStrategy();
-    void NoiseTraderStrategy();
+    void MeanReversionStrategy(Bot& bot, std::function<void(Order&, OrderBook&)> matchingfunction);
     void HerdBehaviorStrategy();
     void PanicSellingStrategy();
     void CancelOrder(Bot& bot);
@@ -61,6 +62,7 @@ public:
     void ProcessMarketMaker(std::function<void(Order& ord, OrderBook& book)>);
 
     static std::array<Bot, TotalBots> bots; // momentum, mean-reversion
+    static std::array<Bot, 1> MarketMakers; // momentum, mean-reversion
 
 private:
 };
