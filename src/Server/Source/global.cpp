@@ -33,3 +33,6 @@ std::vector<ConditionalOrder>				Global::conditionalOrders;
 std::atomic<uint64_t>						Global::nextCondId{ 1 };
 
 std::string									Global::HOUSE_USER{ "EXCHANGE" };
+
+std::unordered_map<SOCKET, Global::DHSession> Global::dhSessions;
+std::mutex									Global::dhMutex;

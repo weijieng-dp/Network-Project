@@ -10,6 +10,7 @@
 #include <deque>
 
 #include "types.h"
+#include "crypto.h"
 
 class Global {
 public:
@@ -67,4 +68,17 @@ public:
 	 *--------------------------------------------------------------------------*/
 
 	static std::string HOUSE_USER;
+
+	// DH key exchange state per client (store in session)
+	struct DHSession {
+		DiffieHellman dh;
+		std::vector<uint8_t> sessionKey;
+		bool established;
+
+		DHSession() : established(false) {}
+	};
+
+	// Map of DH sessions by client socket (or username after login)
+	static std::unordered_map<SOCKET, DHSession> dhSessions;
+	static std::mutex dhMutex;
 };

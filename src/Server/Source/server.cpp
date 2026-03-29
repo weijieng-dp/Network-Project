@@ -608,6 +608,8 @@ static void clientSession(SOCKET sock) {
     std::string username;  // empty = not logged in
     sockaddr_in udpSubAddr{};  // this client's UDP subscriber address (set on CMD_SUB_MARKET)
     bool hasUdpSub = false;
+    bool dhEstablished = false;  // Track if DH handshake completed
+    std::vector<uint8_t> sessionKey;  // Store session key for this client
 
     // Register socket in user map on login, deregister on exit
     auto cleanup = [&]() {
@@ -647,17 +649,171 @@ static void clientSession(SOCKET sock) {
 
         // ---- Dispatch ----
         switch ((CmdID)cmdId) {
+        case CMD_DH_PUBLIC_KEY:
+        {
+            uint64_t clientPublicKey = 0;
+            if (!readU64(payload.data(), (int)payLen, o, clientPublicKey)) {
+                sendServerMsg(sock, "Invalid DH public key.");
+                break;
+            }
 
+            {
+                std::lock_guard<std::mutex> plk(Global::printMtx);
+                std::cout << "[DH] Received client public key: " << clientPublicKey << "\n";
+            }
+
+            // Create or get DH session for this socket
+            std::lock_guard<std::mutex> lk(Global::dhMutex);
+            auto& session = Global::dhSessions[sock];
+
+            // Log server's keys before computation
+            uint64_t serverPublicKeyBefore = session.dh.getPublicKey();
+
+            // Compute shared secret using client's public key
+            session.dh.computeSharedSecret(clientPublicKey);
+            uint64_t sharedSecret = session.dh.getSharedSecret();
+            session.sessionKey = session.dh.getEncryptionKey(32);
+            session.established = true;
+
+            {
+                std::lock_guard<std::mutex> plk(Global::printMtx);
+                std::cout << "[DH] Computed shared secret: " << sharedSecret << "\n";
+
+                std::string keyStr;
+                for (size_t i = 0; i < std::min(session.sessionKey.size(), (size_t)16); ++i) {
+                    char buf[4];
+                    sprintf_s(buf, "%02X ", session.sessionKey[i]);
+                    keyStr += buf;
+                }
+                std::cout << "[DH] Session key (first 16): " << keyStr << "\n";
+            }
+
+            // Send server's public key back to client
+            std::vector<char> p;
+            pushU64(p, session.dh.getPublicKey());
+            sendFrame(sock, CMD_DH_PUBLIC_KEY_RESPONSE, p);
+
+            // Store in local session variables
+            dhEstablished = true;
+            sessionKey = session.sessionKey;
+
+            break;
+        }
         case CMD_LOGIN: {
             std::string user, pass;
+            // This reads: [UsernameLen:1] [Username:var]
             if (!readStr1(payload.data(), (int)payLen, o, user) || user.empty()) {
-                std::vector<char> p; pushStr1(p, "Empty username."); sendFrame(sock, CMD_LOGIN_FAIL, p); break;
+                std::vector<char> p;
+                pushStr1(p, "Empty username.");
+                sendFrame(sock, CMD_LOGIN_FAIL, p);
+                break;
             }
-            // Read password (new field — if missing, treat as empty for backwards compat)
-            readStr1(payload.data(), (int)payLen, o, pass);
+
+            {
+                std::lock_guard<std::mutex> plk(Global::printMtx);
+                std::cout << "[LOGIN] Received username: '" << user
+                    << "' (len=" << user.length() << ")\n";
+            }
+
+            // ===== READ FLAG =====
+            uint8_t encFlag = 0;
+            if (!readU8(payload.data(), (int)payLen, o, encFlag)) {
+                std::vector<char> p;
+                pushStr1(p, "Invalid login format - missing flag.");
+                sendFrame(sock, CMD_LOGIN_FAIL, p);
+                break;
+            }
+
+            {
+                std::lock_guard<std::mutex> plk(Global::printMtx);
+                std::cout << "[LOGIN] Encryption flag: " << (int)encFlag << "\n";
+            }
+
+            // ===== READ PASSWORD =====
+            if (encFlag == 1) {
+                // Encrypted password format: [EncryptedLen:2] [EncryptedData:var]
+                uint16_t encLen = 0;
+                if (!readU16(payload.data(), (int)payLen, o, encLen)) {
+                    std::vector<char> p;
+                    pushStr1(p, "Invalid encrypted password length.");
+                    sendFrame(sock, CMD_LOGIN_FAIL, p);
+                    break;
+                }
+
+                {
+                    std::lock_guard<std::mutex> plk(Global::printMtx);
+                    std::cout << "[LOGIN] Encrypted data length: " << encLen << "\n";
+                }
+
+                if (encLen == 0 || o + encLen > (int)payLen) {
+                    std::vector<char> p;
+                    pushStr1(p, "Invalid encrypted data.");
+                    sendFrame(sock, CMD_LOGIN_FAIL, p);
+                    break;
+                }
+
+                std::vector<uint8_t> encryptedPass(encLen);
+                memcpy(encryptedPass.data(), payload.data() + o, encLen);
+                o += encLen;
+                std::cout << "encrypted pass: ";
+                for (uint8_t pass : encryptedPass)
+                    std::cout << (int)pass << " ";
+                std::cout << std::endl;
+
+                std::cout << "session key: ";
+                std::stringstream sessionKeystream;
+                for (uint8_t key : sessionKey)
+                    std::cout << (int)key << " ";
+                std::cout << std::endl;
+
+                // Decrypt using session key
+                if (dhEstablished && !sessionKey.empty()) {
+                    std::vector<uint8_t> encryptedBytes(encryptedPass.begin(), encryptedPass.end());
+                    auto decryptedBytes = DiffieHellman::xorEncryptDecrypt(encryptedBytes, sessionKey);
+                    pass = std::string(decryptedBytes.begin(), decryptedBytes.end());
+
+                    {
+                        std::lock_guard<std::mutex> plk(Global::printMtx);
+                        std::cout << "[LOGIN] Decrypted password: " << pass<<"\n";
+                    }
+                }
+                else {
+                    std::vector<char> p;
+                    pushStr1(p, "No secure channel established.");
+                    sendFrame(sock, CMD_LOGIN_FAIL, p);
+                    break;
+                }
+            }
+            else {
+                // Plaintext password format: [PasswordLen:1] [Password:var]
+                if (!readStr1(payload.data(), (int)payLen, o, pass)) {
+                    std::vector<char> p;
+                    pushStr1(p, "Invalid plaintext password.");
+                    sendFrame(sock, CMD_LOGIN_FAIL, p);
+                    break;
+                }
+
+                {
+                    std::lock_guard<std::mutex> plk(Global::printMtx);
+                    std::cout << "[LOGIN] Plaintext password length: " << pass.length() << "\n";
+                }
+            }
+
             if (pass.empty()) {
-                std::vector<char> p; pushStr1(p, "Password required."); sendFrame(sock, CMD_LOGIN_FAIL, p); break;
+                std::vector<char> p;
+                pushStr1(p, "Empty password.");
+                sendFrame(sock, CMD_LOGIN_FAIL, p);
+                break;
             }
+
+            // Log encryption status
+            {
+                std::lock_guard<std::mutex> plk(Global::printMtx);
+                std::cout << "[LOGIN] " << user << " - "
+                    << (encFlag == 1 ? "encrypted" : "plaintext")
+                    << " password (len=" << pass.length() << ")\n";
+            }
+
             // Reject re-login without logout
             if (!username.empty()) { sendServerMsg(sock, "Already logged in as '" + username + "'."); break; }
             // Block login as the house/market-maker account

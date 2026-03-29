@@ -81,6 +81,7 @@ prior written consent of DigiPen Institute of Technology is prohibited.
 #include <ftxui/component/component.hpp>
 #include <ftxui/component/screen_interactive.hpp>
 #include <ftxui/component/event.hpp>
+#include <crypto.h>
 
 static const int MAX_PAYLOAD = 8192;
 static const std::vector<std::string> SYMBOLS = {"AAPL","GOOGL","MSFT","TSLA","AMZN"};
@@ -145,6 +146,12 @@ static std::map<std::string,MarketSnapshot> g_marketData;
 static std::mutex g_logMtx;
 static std::deque<std::string> g_logMessages;
 static const size_t MAX_LOG_LINES = 200;
+
+// Encryption
+static DiffieHellman g_dh;
+static std::vector<uint8_t> g_sessionKey;
+static std::atomic<bool> g_dhEstablished{ false };
+static std::mutex g_dhMutex;
 
 // FTXUI screen reference for PostEvent from background threads
 static ftxui::ScreenInteractive* g_screenPtr = nullptr;
@@ -397,6 +404,38 @@ static void tcpReceiveThread() {
             logMsg(oss.str());
             break;
         }
+        case CMD_DH_PUBLIC_KEY_RESPONSE: {
+            uint64_t serverPublicKey = 0;
+            if (!readU64(b, n, o, serverPublicKey)) {
+                logMsg("Invalid DH public key response");
+                break;
+            }
+
+            logMsg("DH: Received server public key = " + std::to_string(serverPublicKey));
+
+            // Compute shared secret
+            g_dh.computeSharedSecret(serverPublicKey);
+            g_sessionKey = g_dh.getEncryptionKey(32);
+
+            {
+                std::lock_guard<std::mutex> lk(g_dhMutex);
+                g_dhEstablished = true;
+            }
+
+            uint64_t secret = g_dh.getSharedSecret();
+            logMsg("DH: Shared secret = " + std::to_string(secret));
+
+            std::string keyStr;
+            for (size_t i = 0; i < std::min(g_sessionKey.size(), (size_t)16); ++i) {
+                char buf[4];
+                sprintf_s(buf, "%02X ", g_sessionKey[i]);
+                keyStr += buf;
+            }
+            logMsg("DH: Session key (first 16) = " + keyStr);
+
+            logMsg("DH key exchange complete. Secure channel established.");
+            break;
+        }
         default: logMsg("[WARN] Unknown server response: "+std::to_string(cmdId)); break;
         }
     }
@@ -448,12 +487,102 @@ static void udpReceiveThread() {
  * Command processing  (called from TUI input)
  *--------------------------------------------------------------------------*/
 
+ /**
+  * Perform Diffie-Hellman key exchange with server
+  * Returns true if handshake successful
+  */
+static bool performDHHandshake() {
+    if (g_dhEstablished.load()) {
+        return true;
+    }
+
+    // Create DH with random keys
+    DiffieHellman clientDH;
+
+    uint64_t clientPublic = clientDH.getPublicKey();
+
+
+    // Send public key to server
+    std::vector<char> p;
+    pushU64(p, clientPublic);
+    if (!sendFrame(g_tcpSocket, CMD_DH_PUBLIC_KEY, p)) {
+        logMsg("Failed to send DH public key");
+        return false;
+    }
+
+    // Store for later use
+    g_dh = clientDH;
+
+    // Wait for server's response
+    auto start = std::chrono::steady_clock::now();
+    while (!g_dhEstablished.load() &&
+        std::chrono::steady_clock::now() - start < std::chrono::seconds(5)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    return g_dhEstablished.load();
+}
+
 static void cmdLogin(const std::string& user, const std::string& pass) {
     if(user.empty()||pass.empty()){logMsg("Usage: /login <username> <password>"); return;}
     {std::lock_guard<std::mutex> lk(g_stateMtx); g_username=user;}
-    std::vector<char> p; pushStr1(p,user); pushStr1(p,pass);
-    sendFrame(g_tcpSocket,CMD_LOGIN,p);
-    logMsg("Logging in as '" + user + "'...");
+
+    // Perform DH handshake if not already done
+    if (!g_dhEstablished.load()) {
+        logMsg("Establishing secure channel...");
+        if (!performDHHandshake()) {
+            logMsg("Warning: Using plaintext password (insecure)");
+        }
+    }
+
+    std::vector<char> p;
+
+    // ===== USERNAME SECTION =====
+    // This pushes: [UsernameLen:1] [Username:var]
+    pushStr1(p, user);
+
+    // ===== PASSWORD SECTION =====
+    if (g_dhEstablished.load() && !g_sessionKey.empty()) {
+        // Encrypted password format:
+        // [Flag:1] [EncryptedLen:2] [EncryptedData:var]
+
+        // Push flag (1 = encrypted)
+        pushU8(p, 1);
+
+        // Encrypt the password
+        std::vector<uint8_t> passBytes(pass.begin(), pass.end());
+        auto encrypted = DiffieHellman::xorEncryptDecrypt(passBytes, g_sessionKey);
+
+        // Push encrypted data length as uint16_t
+        pushU16(p, (uint16_t)encrypted.size());
+
+        // Push encrypted data
+        p.insert(p.end(), encrypted.begin(), encrypted.end());
+
+        logMsg("Sending encrypted login for '" + user + "'");
+        logMsg("Username length: " + std::to_string(user.length()));
+        logMsg("Encrypted password length: " + std::to_string(encrypted.size()));
+    }
+    else {
+        // Plaintext password format:
+        // [Flag:0] [Password using pushStr1 which pushes: PasswordLen:1 + Password:var]
+
+        // Push flag (0 = plaintext)
+        pushU8(p, 0);
+
+        // This pushes: [PasswordLen:1] [Password:var]
+        pushStr1(p, pass);
+
+        logMsg("Sending plaintext login for '" + user + "'");
+        logMsg("Username length: " + std::to_string(user.length()));
+        logMsg("Password length: " + std::to_string(pass.length()));
+    }
+
+    if (!sendFrame(g_tcpSocket, CMD_LOGIN, p)) {
+        logMsg("Failed to send login request");
+    }
+    else
+        logMsg("Logging in as '" + user + "'...");
 }
 static void cmdLogout() { sendFrame(g_tcpSocket,CMD_LOGOUT,{}); }
 static void cmdPlaceOrder(char side, const std::string& sym, uint32_t qty, double price) {

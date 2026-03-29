@@ -16,6 +16,7 @@ enum CmdID : uint8_t {
     CMD_QUERY_PORTFOLIO = 0x0D,
     CMD_QUERY_STOPS = 0x0E,
     CMD_CANCEL_STOP = 0x0F,
+    CMD_DH_PUBLIC_KEY = 0x10,
     // Server -> Client
     CMD_LOGIN_OK = 0x81,        CMD_LOGIN_FAIL = 0x82,
     CMD_ORDER_ACK = 0x83,       CMD_ORDER_REJECT = 0x84,
@@ -24,6 +25,7 @@ enum CmdID : uint8_t {
     CMD_ACCOUNT_DATA = 0x89,    CMD_SERVER_MSG = 0x8A,
     CMD_LOGOUT_OK = 0x8B,       CMD_ORDER_LIST = 0x8C,
     CMD_TRADE_LIST = 0x8D,      CMD_HISTORY_DATA = 0x8E,
+    CMD_DH_PUBLIC_KEY_RESPONSE = 0x8F
 };
 
 /*--------------------------------------------------------------------------
