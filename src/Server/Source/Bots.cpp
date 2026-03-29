@@ -12,11 +12,12 @@
 
 std::array<Bot, TotalBots> BotManager::bots{}; // momentum, mean-reversion
 std::array<Bot, 5> BotManager::MarketMakers{}; // momentum, mean-reversion
+std::array<Bot, 5> BotManager::NoiseTraders{}; // momentum, mean-reversion
+static std::mt19937 rng(std::random_device{}());
 
 
-void Bot::InitBot( std::string botName,bool isMarketMaker)
+void Bot::InitBot( std::string botName,Strategy strategy)
 {
-	static std::mt19937 rng(std::random_device{}());
 	std::uniform_int_distribution<int> dist(1, 3/*StrategyCount - 1*/);
 	std::uniform_real_distribution<float> reaction(0.2f, 1.2f);
 	std::uniform_int_distribution<int> hold(50, 200);
@@ -28,7 +29,7 @@ void Bot::InitBot( std::string botName,bool isMarketMaker)
 
 
 
-	if (isMarketMaker)
+	if (strategy == MarketMaker)
 	{
 		bot = Strategy::MarketMaker;
 		botname = "MarketMaker_" + botName;
@@ -37,6 +38,19 @@ void Bot::InitBot( std::string botName,bool isMarketMaker)
 		acc.username = botname;
 		acc.cash = 500000;
 		acc.holdings[botName] = 10000;
+		lastPriceSeen = Global::REFERENCE_PRICES[botName];
+		if (Global::accounts[botname].holdings[botName] > 0) averageEntryPrice = lastPriceSeen;
+		else averageEntryPrice = 0.0f;
+	}
+	else if (strategy == NoiseTrader)
+	{
+		bot = Strategy::NoiseTrader;
+		botname = "NoiseTrader_" + botName;
+		Symbol = botName;
+		auto& acc = Global::accounts[botname];
+		acc.username = botname;
+		acc.cash = 50000;
+		acc.holdings[botName] = 100;
 		lastPriceSeen = Global::REFERENCE_PRICES[botName];
 		if (Global::accounts[botname].holdings[botName] > 0) averageEntryPrice = lastPriceSeen;
 		else averageEntryPrice = 0.0f;
@@ -134,7 +148,8 @@ void BotManager::InitMarketMaker()
 {
 	for (int i = 0; i < 5; i++)
 	{
-		MarketMakers[i].InitBot( Global::SYMBOLS[i], true);
+		MarketMakers[i].InitBot(Global::SYMBOLS[i], MarketMaker);
+		NoiseTraders[i].InitBot( Global::SYMBOLS[i], NoiseTrader);
 	}
 }
 
@@ -334,21 +349,36 @@ void BotManager::MeanReversionStrategy(Bot& bot,
 	auto& book = Global::books[bot.Symbol];
 	auto& house = Global::accounts[bot.botname];
 
-	double mmMidprice = 0.0;
-	for (int i = 0; i < static_cast<int>(MarketMakers.size()); i++)
-		if (MarketMakers[i].Symbol == bot.Symbol)
-		{
-			mmMidprice = MarketMakers[i].lastPriceSeen; break;
-		}
-	if (mmMidprice <= 0) return;
+	double Mean = 0.0;
+	int const& MeanWindow = 20;
+	auto& Log = book.tradeLog;
+	
+	if (Log.size() < MeanWindow) return;
 
-	double reference = bot.lastPriceSeen;
-	double deviation = (mmMidprice - reference) / reference;
+	for (int i = Log.size() - MeanWindow; i < Log.size(); i++)
+	{
+		Mean += Log[i].price;
+	
+	}
+	Mean /= MeanWindow;
+
+	if (Mean <= 0) return;
+
+	double deviation = (book.lastPrice - Mean);
 
 	// Always update reference so it doesn't get permanently stale
-	bot.lastPriceSeen = mmMidprice;
+	double standardDeviation = 0.0;
 
-	if (std::abs(deviation) < 0.001) return;
+	for (int i = Log.size() - MeanWindow; i < Log.size(); i++)
+	{
+		double diff = Log[i].price - Mean;
+		standardDeviation += diff * diff;
+	}
+
+	standardDeviation /= MeanWindow;
+	standardDeviation = std::sqrt(standardDeviation);
+
+	if (standardDeviation == 0.0) return;
 
 	uint32_t qty = 10;
 	Order ord;
@@ -359,8 +389,9 @@ void BotManager::MeanReversionStrategy(Bot& bot,
 	ord.origQty = qty;
 	ord.qty = qty;
 
+	double z_score = deviation / standardDeviation;
 	// In MeanReversionStrategy, swap the conditions:
-if (deviation > 0 && !book.bids.empty())
+if (z_score > 1.5 && !book.bids.empty())
 {
     // Price rose above reference — sell into bid
     ord.side = 'S';
@@ -368,7 +399,7 @@ if (deviation > 0 && !book.bids.empty())
     if (house.holdings[bot.Symbol] < qty) return;
     house.holdings[bot.Symbol] -= qty;
 }
-else if (deviation < 0 && !book.asks.empty())
+else if (z_score < -1.5 && !book.asks.empty())
 {
     // Price dropped below reference — buy into ask
     ord.side = 'B';
@@ -391,23 +422,100 @@ else if (deviation < 0 && !book.asks.empty())
 	matchingfunction(ord, book);
 
 	// Update reference to MM midprice so bot tracks the walk
-	bot.lastPriceSeen = mmMidprice;
+	bot.lastPriceSeen = book.lastPrice;
 
 	// Refund unmatched remainder
+	CancelOrder(bot);
+}
+void BotManager::NoiseTradingStrategy(
+	Bot& bot,
+	std::function<void(Order&, OrderBook&)> matchingfunction)
+{
+	auto& book = Global::books[bot.Symbol];
+	auto& house = Global::accounts[bot.botname];
+
+	if (book.bids.empty() || book.asks.empty()) return;
+	std::uniform_int_distribution<int> rollc(0, 99);
+	std::uniform_int_distribution<int> qty(1, 10);
+	std::uniform_int_distribution<int> buy(0, 1);
+	// Only act sometimes
+	int roll = rollc(rng);
+	if (roll >= 25) return; // 25% chance to trade this tick
+
+	double bestBid = book.bids.begin()->first;
+	double bestAsk = book.asks.begin()->first;
+
+	Order ord;
+	ord.orderId = Global::nextOrderId.fetch_add(1);
+	ord.username = bot.botname;
+	ord.symbol = bot.Symbol;
+	ord.ts = std::chrono::steady_clock::now();
+	ord.origQty = qty(rng); // qty 1 to 10
+	ord.qty = ord.origQty;
+
+	bool buySide = buy(rng);
+
+	if (buySide)
+	{
+		ord.side = 'B';
+		ord.price = bestAsk; // aggressive buy, hits ask
+
+		double cost = ord.price * ord.qty;
+		if (house.cash < cost) return;
+
+		house.cash -= cost;
+	}
+	else
+	{
+		ord.side = 'S';
+		ord.price = bestBid; // aggressive sell, hits bid
+
+		if (house.holdings[bot.Symbol] < ord.qty) return;
+
+		house.holdings[bot.Symbol] -= ord.qty;
+	}
+
+	Global::liveOrders[ord.orderId] = ord;
+	house.openOrders[ord.orderId] = ord;
+
+	matchingfunction(ord, book);
+
+	std::cout << "[NT] " << bot.botname
+		<< " sym=" << bot.Symbol
+		<< " side=" << ord.side
+		<< " price=" << std::fixed << std::setprecision(4) << ord.price
+		<< " qty=" << ord.qty;
+
+	// Cancel any leftover unmatched qty and refund
 	if (ord.qty > 0)
 	{
 		if (ord.side == 'B')
 		{
 			house.cash += ord.price * ord.qty;
-			book.bids[ord.price].erase(ord.orderId);
-			if (book.bids[ord.price].empty()) book.bids.erase(ord.price);
+			auto bidIt = book.bids.find(ord.price);
+			if (bidIt != book.bids.end())
+			{
+				bidIt->second.erase(ord.orderId);
+				if (bidIt->second.empty()) book.bids.erase(bidIt);
+			}
 		}
 		else
 		{
 			house.holdings[bot.Symbol] += ord.qty;
-			book.asks[ord.price].erase(ord.orderId);
-			if (book.asks[ord.price].empty()) book.asks.erase(ord.price);
+			auto askIt = book.asks.find(ord.price);
+			if (askIt != book.asks.end())
+			{
+				askIt->second.erase(ord.orderId);
+				if (askIt->second.empty()) book.asks.erase(askIt);
+			}
 		}
+
+
+		Global::liveOrders.erase(ord.orderId);
+		house.openOrders.erase(ord.orderId);
+	}
+	else
+	{
 		Global::liveOrders.erase(ord.orderId);
 		house.openOrders.erase(ord.orderId);
 	}
@@ -491,13 +599,14 @@ void BotManager::ProcessStrategies(std::function<void(Order& ord, OrderBook& boo
 		{
 		case Mean_Reversion:
 
-			MeanReversionStrategy(bots[i], matchingfunction);  // ← fill this in
+			MeanReversionStrategy(bots[i], matchingfunction);
 			break;
 
 		case Momentum:
 			MomentumStrategy(bots[i],matchingfunction);
 			break;
 
+			break;
 		case Trend_Following:
 			break;
 		case HerdBehavior:
@@ -545,6 +654,8 @@ void BotManager::ProcessMarketMaker(std::function<void(Order& ord, OrderBook& bo
 		matchingfunction(orders[0], Global::books[MarketMakers[i].Symbol]);
 		matchingfunction(orders[1], Global::books[MarketMakers[i].Symbol]);
 
+
+		NoiseTradingStrategy(NoiseTraders[i], matchingfunction);
 	}
 }
 

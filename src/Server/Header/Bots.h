@@ -14,6 +14,7 @@ enum Strategy
     Trend_Following,
     HerdBehavior,
     PanicSelling,
+    NoiseTrader,
 
     StrategyCount
 
@@ -22,7 +23,7 @@ enum Strategy
 class Bot
 {
 public:
-    void InitBot( std::string botName, bool isMarketMaker = false);
+    void InitBot( std::string botName, Strategy strategy = StrategyCount);
     Strategy bot;
     std::string botname;
     std::string Symbol;
@@ -53,6 +54,7 @@ public:
     void MomentumStrategy(Bot& bot, std::function<void(Order&, OrderBook&)> matchingfunction);
     void TrendFollowingStrategy();
     void MeanReversionStrategy(Bot& bot, std::function<void(Order&, OrderBook&)> matchingfunction);
+    void NoiseTradingStrategy(Bot& bot, std::function<void(Order&, OrderBook&)> matchingfunction);
     void HerdBehaviorStrategy();
     void PanicSellingStrategy();
     void CancelOrder(Bot& bot);
@@ -63,6 +65,7 @@ public:
 
     static std::array<Bot, TotalBots> bots; // momentum, mean-reversion
     static std::array<Bot, 5> MarketMakers; // momentum, mean-reversion
+    static std::array<Bot, 5> NoiseTraders; // momentum, mean-reversion
 
 private:
 };
