@@ -37,7 +37,6 @@ void Display::Init() {
     glfwSwapInterval(0);
 
 
-
     IMGUI_CHECKVERSION();
 
     ImGui::CreateContext();
@@ -190,4 +189,11 @@ void Display::Draw() {
     glfwSwapBuffers(window);
     glfwPollEvents();
     
+}
+
+void Display::Free() {
+    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplGlfw_Shutdown();
+
+    glfwTerminate();
 }
