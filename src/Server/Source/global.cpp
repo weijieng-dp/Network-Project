@@ -1,6 +1,10 @@
 #include "global.h"
 
 std::vector<std::string>					Global::SYMBOLS{ "AAPL","GOOGL","MSFT","TSLA","AMZN" };
+std::map<std::string, double> Global::REFERENCE_PRICES{
+   {"AAPL", 180.00}, {"GOOGL", 170.00}, {"MSFT", 420.00},
+   {"TSLA", 250.00}, {"AMZN", 185.00}
+};
 
 std::mutex									Global::exMtx;   
 

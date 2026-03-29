@@ -1080,15 +1080,9 @@ int old_main() {
     //seedBotAccounts();
     
 
-    BotManager::Instance().InitMarketMaker(
-        Global::books["AAPL"].lastPrice > 0
-        ? Global::books["AAPL"].lastPrice
-        : 180.0);
+    BotManager::Instance().InitMarketMaker();
 
-    BotManager::Instance().InitBots(
-        Global::books["AAPL"].lastPrice > 0
-        ? Global::books["AAPL"].lastPrice
-        : 180.0);
+    BotManager::Instance().InitBots();
 
 
 
