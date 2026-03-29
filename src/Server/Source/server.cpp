@@ -120,6 +120,7 @@ prior written consent of DigiPen Institute of Technology is prohibited.
 #include "house.h"
 #include "persistence.h"
 #include "Bots.h"
+#include "crisis.h"
 
 static const int    MAX_PAYLOAD = 8192;         // max TCP payload bytes
 static const double PERSIST_INTERVAL = 5.0;     // seconds between disk flushes
@@ -1232,26 +1233,18 @@ int old_main() {
     loadPersistentData();
 
     // --- Step 6b: Seed house/market-maker account with initial quotes ---
-    //seedMarketMaker();
-    //seedBotAccounts();
-    
+    BotManager::Instance().InitMarketMaker();
+    BotManager::Instance().InitBots();
 
-    BotManager::Instance().InitMarketMaker(
-        Global::books["AAPL"].lastPrice > 0
-        ? Global::books["AAPL"].lastPrice
-        : 180.0);
-
-    BotManager::Instance().InitBots(
-        Global::books["AAPL"].lastPrice > 0
-        ? Global::books["AAPL"].lastPrice
-        : 180.0);
-
+    // --- Step 6c: Initialize Managers
+    CrisisManager::Init();
 
 
     // --- Step 7: Start background threads ---
     std::thread bcastThr(udpBroadcastThread);
     std::thread persThr(persistThread);
     std::thread simThr(simulationThread);
+    std::thread crisisThr(CrisisManager::Update);
 
     // --- Step 8: Accept loop (pre-threading: spawn one thread per client) ---
     std::cout << "Exchange ready. Ctrl+C to stop.\n\n";
@@ -1270,7 +1263,12 @@ int old_main() {
     // --- Shutdown ---
     Global::running = false;
     closesocket(listener);
-    bcastThr.join(); persThr.join(); simThr.join();
+
+    bcastThr.join(); 
+    persThr.join(); 
+    simThr.join(); 
+    crisisThr.join();
+
     closesocket(Global::udpSocket);
     WSACleanup();
     return 0;

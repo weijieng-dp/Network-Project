@@ -4,14 +4,14 @@
 
 
 
-constexpr int TotalBots = 4;
+constexpr int TotalBots = 30;
 
 enum Strategy
 {
     MarketMaker = 0,
-    Trend_Following,
-    Momentum,
     Mean_Reversion,
+    Momentum,
+    Trend_Following,
     HerdBehavior,
     PanicSelling,
 
@@ -22,7 +22,7 @@ enum Strategy
 class Bot
 {
 public:
-    void InitBot(double currentPriceMarket, std::string botName, bool isMarketMaker = false);
+    void InitBot( std::string botName, bool isMarketMaker = false);
     Strategy bot;
     std::string botname;
     std::string Symbol;
@@ -46,11 +46,11 @@ public:
         return instance;
     }
 
-    void InitBots(double currentPriceMarket);
-    void InitMarketMaker(double currentPriceMarket);
+    void InitBots();
+    void InitMarketMaker();
 
     std::array<Order,2> MarketMakerStrategy(Bot& bot, double const& bestbid, double const& bestask);
-    void MomentumStrategy();
+    void MomentumStrategy(Bot& bot, std::function<void(Order&, OrderBook&)> matchingfunction);
     void TrendFollowingStrategy();
     void MeanReversionStrategy(Bot& bot, std::function<void(Order&, OrderBook&)> matchingfunction);
     void HerdBehaviorStrategy();

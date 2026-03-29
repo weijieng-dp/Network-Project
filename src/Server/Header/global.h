@@ -16,6 +16,7 @@ class Global {
 public:
 
 	static std::vector<std::string> SYMBOLS;
+	static std::map<std::string, double> REFERENCE_PRICES;
 
 	/*--------------------------------------------------------------------------
 	 * Global exchange state  (protected by exMtx)

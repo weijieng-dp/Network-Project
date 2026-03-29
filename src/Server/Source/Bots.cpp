@@ -14,10 +14,10 @@ std::array<Bot, TotalBots> BotManager::bots{}; // momentum, mean-reversion
 std::array<Bot, 5> BotManager::MarketMakers{}; // momentum, mean-reversion
 
 
-void Bot::InitBot(double currentPriceMarket, std::string botName,bool isMarketMaker)
+void Bot::InitBot( std::string botName,bool isMarketMaker)
 {
 	static std::mt19937 rng(std::random_device{}());
-	std::uniform_int_distribution<int> dist(0, StrategyCount - 1);
+	std::uniform_int_distribution<int> dist(1, 3/*StrategyCount - 1*/);
 	std::uniform_real_distribution<float> reaction(0.2f, 1.2f);
 	std::uniform_int_distribution<int> hold(50, 200);
 	std::uniform_int_distribution<int> sym(0, Global::SYMBOLS.size() - 1);
@@ -26,33 +26,42 @@ void Bot::InitBot(double currentPriceMarket, std::string botName,bool isMarketMa
 	std::uniform_real_distribution<float> mrw(0.2f, 1.0f);
 	std::uniform_real_distribution<float> hw(0.0f, 1.0f);
 
-	Symbol = Symbol = Global::SYMBOLS[sym(rng)];
 
 
 	if (isMarketMaker)
 	{
 		bot = Strategy::MarketMaker;
-		Global::accounts["MarketMaker_" + botName].cash = 500000;
-		Global::accounts["MarketMaker_" + botName].holdings[botName] = 10000;
+		botname = "MarketMaker_" + botName;
+		Symbol = botName;
+		auto& acc = Global::accounts[botname];
+		acc.username = botname;
+		acc.cash = 500000;
+		acc.holdings[botName] = 10000;
+		lastPriceSeen = Global::REFERENCE_PRICES[botName];
+		if (Global::accounts[botname].holdings[botName] > 0) averageEntryPrice = lastPriceSeen;
+		else averageEntryPrice = 0.0f;
 	}
 	else
 	{
-		bot = Strategy::Mean_Reversion;
+		bot = static_cast<Strategy>(dist(rng));
+		Symbol = Global::SYMBOLS[sym(rng)];
+
 		Global::accounts[botName].cash = 50000;
 		Global::accounts[botName].holdings[Symbol] = 100;
+		Global::accounts[botName].username = botName;
+		botname = botName;
+		lastPriceSeen = Global::REFERENCE_PRICES[Symbol];
+		if (Global::accounts[botname].holdings[Symbol] > 0) averageEntryPrice = lastPriceSeen;
+		else averageEntryPrice = 0.0f;
 	}
 
 
 
-	Global::accounts[botName].username = botName;
 
-	botname = botName;
 	reactionSpeed = reaction(rng);
-	lastPriceSeen = currentPriceMarket;
 	cooldown = cd(rng);
 
-	if (Global::accounts[botName].holdings[Symbol] > 0) averageEntryPrice = lastPriceSeen;
-	else averageEntryPrice = 0.0f;
+
 
 	momentumWeight = mw(rng);
 	meanReversionWeight = mrw(rng);
@@ -113,19 +122,19 @@ void Bot::InitBot(double currentPriceMarket, std::string botName,bool isMarketMa
 	bias = biasProb(rng);
 }
 
-void BotManager::InitBots(double currentPriceMarket)
+void BotManager::InitBots()
 {
 	for (int i = 0; i < TotalBots; i++)
 	{
-		bots[i].InitBot(currentPriceMarket, "bot_" + std::to_string(i));
+		bots[i].InitBot( "bot_" + std::to_string(i));
 	}
 }
 
-void BotManager::InitMarketMaker(double currentPriceMarket)
+void BotManager::InitMarketMaker()
 {
 	for (int i = 0; i < 5; i++)
 	{
-		MarketMakers[i].InitBot(currentPriceMarket, Global::SYMBOLS[i], true);
+		MarketMakers[i].InitBot( Global::SYMBOLS[i], true);
 	}
 }
 
@@ -199,8 +208,120 @@ std::array<Order, 2> BotManager::MarketMakerStrategy(Bot& bot, double const& bes
 	return orders;
 }
 
-void BotManager::MomentumStrategy()
+void BotManager::MomentumStrategy(Bot& bot,
+	std::function<void(Order&, OrderBook&)> matchingfunction)
 {
+	auto& book = Global::books[bot.Symbol];
+	auto& house = Global::accounts[bot.botname];
+
+	// --- 1. Gather price history from tradeLog ---
+	const auto& log = book.tradeLog;
+
+	static const int FAST_WINDOW = 8;
+	static const int SLOW_WINDOW = 24;
+
+	if ((int)log.size() < SLOW_WINDOW) return;  // not enough history yet
+
+	// Fast MA: average of last FAST_WINDOW trade prices
+	double fastMA = 0.0;
+	for (int i = (int)log.size() - FAST_WINDOW; i < (int)log.size(); i++)
+		fastMA += log[i].price;
+	fastMA /= FAST_WINDOW;
+
+	// Slow MA: average of last SLOW_WINDOW trade prices
+	double slowMA = 0.0;
+	for (int i = (int)log.size() - SLOW_WINDOW; i < (int)log.size(); i++)
+		slowMA += log[i].price;
+	slowMA /= SLOW_WINDOW;
+
+	if (slowMA <= 0) return;
+
+	double signal = (fastMA - slowMA) / slowMA;  // normalised momentum
+
+	// --- 2. Dead zone: ignore weak signals (flat/choppy market) ---
+	// Scale threshold by volatility so the dead zone widens in choppy markets
+	double baseThreshold = 0.002 * bot.momentumWeight;  // ~0.2% baseline
+	double threshold = baseThreshold * (1.0 + book.mmVolatility * 0.5);
+
+	if (std::abs(signal) < threshold) return;  // hovering — sit out
+
+	// --- 3. Volume confirmation ---
+	// Compare recent volume (last FAST_WINDOW trades) vs baseline (full window)
+	double recentVol = 0.0;
+	for (int i = (int)log.size() - FAST_WINDOW; i < (int)log.size(); i++)
+		recentVol += log[i].qty;
+
+	double baseVol = 0.0;
+	for (int i = (int)log.size() - SLOW_WINDOW; i < (int)log.size(); i++)
+		baseVol += log[i].qty;
+	baseVol /= (SLOW_WINDOW / FAST_WINDOW);  // normalise to same window size
+
+	// Weak signal without volume backing → skip
+	if (recentVol < baseVol * 0.8) return;
+
+	// --- 4. Build order ---
+	// Scale qty by risk tolerance and dampen when volatility is high
+	double volDampener = 1.0 / (1.0 + book.mmVolatility * 0.3);
+	uint32_t qty = static_cast<uint32_t>(15 * bot.riskTolerance * volDampener);
+	if (qty < 1) return;
+
+	Order ord;
+	ord.orderId = Global::nextOrderId.fetch_add(1);
+	ord.username = bot.botname;
+	ord.symbol = bot.Symbol;
+	ord.ts = std::chrono::steady_clock::now();
+	ord.origQty = qty;
+	ord.qty = qty;
+
+	if (signal > threshold)  // uptrend — buy into ask
+	{
+		if (book.asks.empty()) return;
+		ord.side = 'B';
+		ord.price = book.asks.begin()->first;
+		if (house.cash < ord.price * qty) return;
+		house.cash -= ord.price * qty;
+	}
+	else  // downtrend — sell into bid
+	{
+		if (book.bids.empty()) return;
+		ord.side = 'S';
+		ord.price = book.bids.begin()->first;
+		if (house.holdings[bot.Symbol] < qty) return;
+		house.holdings[bot.Symbol] -= qty;
+	}
+
+	Global::liveOrders[ord.orderId] = ord;
+	house.openOrders[ord.orderId] = ord;
+
+	std::cout << "[MOM] " << bot.botname
+		<< " sym=" << bot.Symbol
+		<< " side=" << ord.side
+		<< " price=" << std::fixed << std::setprecision(4) << ord.price
+		<< " qty=" << ord.qty
+		<< " signal=" << signal
+		<< " fastMA=" << fastMA
+		<< " slowMA=" << slowMA << "\n";
+
+	matchingfunction(ord, book);
+
+	// Refund any unmatched remainder
+	if (ord.qty > 0)
+	{
+		if (ord.side == 'B')
+		{
+			house.cash += ord.price * ord.qty;
+			book.bids[ord.price].erase(ord.orderId);
+			if (book.bids[ord.price].empty()) book.bids.erase(ord.price);
+		}
+		else
+		{
+			house.holdings[bot.Symbol] += ord.qty;
+			book.asks[ord.price].erase(ord.orderId);
+			if (book.asks[ord.price].empty()) book.asks.erase(ord.price);
+		}
+		Global::liveOrders.erase(ord.orderId);
+		house.openOrders.erase(ord.orderId);
+	}
 }
 
 void BotManager::TrendFollowingStrategy()
@@ -214,7 +335,7 @@ void BotManager::MeanReversionStrategy(Bot& bot,
 	auto& house = Global::accounts[bot.botname];
 
 	double mmMidprice = 0.0;
-	for (int i = 0; i < 1; i++)
+	for (int i = 0; i < static_cast<int>(MarketMakers.size()); i++)
 		if (MarketMakers[i].Symbol == bot.Symbol)
 		{
 			mmMidprice = MarketMakers[i].lastPriceSeen; break;
@@ -374,6 +495,7 @@ void BotManager::ProcessStrategies(std::function<void(Order& ord, OrderBook& boo
 			break;
 
 		case Momentum:
+			MomentumStrategy(bots[i],matchingfunction);
 			break;
 
 		case Trend_Following:
