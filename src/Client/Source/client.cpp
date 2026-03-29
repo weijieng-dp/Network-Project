@@ -48,10 +48,6 @@ prior written consent of DigiPen Institute of Technology is prohibited.
 #define NOMINMAX
 #endif
 
-#include "Windows.h"
-#include "ws2tcpip.h"
-#pragma comment(lib, "ws2_32.lib")
-
 #include <iostream>
 #include <string>
 #include <vector>

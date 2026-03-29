@@ -1,5 +1,10 @@
 // Shared utils file for client and server.
 #pragma once
+#include "WinSock2.h"
+#include "Windows.h"
+#include "ws2tcpip.h"
+#pragma comment(lib, "ws2_32.lib")
+
 /*--------------------------------------------------------------------------
  * Protocol command IDs
  *--------------------------------------------------------------------------*/

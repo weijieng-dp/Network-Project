@@ -88,10 +88,6 @@ prior written consent of DigiPen Institute of Technology is prohibited.
 #define WIN32_LEAN_AND_MEAN
 #endif
 
-#include "Windows.h"
-#include "ws2tcpip.h"
-#pragma comment(lib, "ws2_32.lib")
-
 #include <iostream>
 #include <string>
 #include <vector>
@@ -117,10 +113,11 @@ prior written consent of DigiPen Institute of Technology is prohibited.
 #include "utils.h"
 #include "types.h"
 #include "global.h"
-#include "house.h"
 #include "persistence.h"
 #include "Bots.h"
 #include "crisis.h"
+#include "display.h"
+
 
 static const int    MAX_PAYLOAD = 8192;         // max TCP payload bytes
 static const double PERSIST_INTERVAL = 5.0;     // seconds between disk flushes
@@ -531,6 +528,7 @@ static void simulationThread() {
     }
 
 }
+
 
 /*--------------------------------------------------------------------------
  * OHLC candle builder for price history charts
@@ -1147,6 +1145,29 @@ static void clientSession(SOCKET sock) {
     }
 }
 
+static void clientManager(SOCKET listener) {
+    std::cout << "Exchange ready. Ctrl+C to stop.\n\n";
+
+    threadPool tp(24);
+
+    while (Global::running.load()) {
+
+        sockaddr_in clientAddr{}; 
+        int addrLen = sizeof(clientAddr);
+
+        SOCKET clientSock = accept(listener, (sockaddr*)&clientAddr, &addrLen);
+        if (clientSock == INVALID_SOCKET) break;
+
+        char ip[INET_ADDRSTRLEN]; inet_ntop(AF_INET, &clientAddr.sin_addr, ip, sizeof(ip));
+        {
+            std::lock_guard<std::mutex> lk(Global::printMtx);
+            std::cout << "[CONNECT] " << ip << ":" << ntohs(clientAddr.sin_port) << "\n";
+        }
+
+        tp.addThread(clientSession, clientSock);
+    }
+}
+
 /*--------------------------------------------------------------------------
  * Background threads
  *--------------------------------------------------------------------------*/
@@ -1244,30 +1265,20 @@ int old_main() {
     std::thread bcastThr(udpBroadcastThread);
     std::thread persThr(persistThread);
     std::thread simThr(simulationThread);
-    std::thread crisisThr(CrisisManager::Update);
-
-    // --- Step 8: Accept loop (pre-threading: spawn one thread per client) ---
-    std::cout << "Exchange ready. Ctrl+C to stop.\n\n";
+    std::thread clientThr(clientManager, listener);
+    
     while (Global::running.load()) {
-        sockaddr_in clientAddr{}; int addrLen = sizeof(clientAddr);
-        SOCKET clientSock = accept(listener, (sockaddr*)&clientAddr, &addrLen);
-        if (clientSock == INVALID_SOCKET) break;
-        char ip[INET_ADDRSTRLEN]; inet_ntop(AF_INET, &clientAddr.sin_addr, ip, sizeof(ip));
-        {
-            std::lock_guard<std::mutex> lk(Global::printMtx);
-            std::cout << "[CONNECT] " << ip << ":" << ntohs(clientAddr.sin_port) << "\n";
-        }
-        std::thread(clientSession, clientSock).detach();
+        CrisisManager::Update();
+        Display::Draw();
     }
 
     // --- Shutdown ---
-    Global::running = false;
     closesocket(listener);
 
     bcastThr.join(); 
     persThr.join(); 
     simThr.join(); 
-    crisisThr.join();
+    clientThr.join();
 
     closesocket(Global::udpSocket);
     WSACleanup();
@@ -1278,6 +1289,7 @@ int old_main() {
 int main() {
 
     // Initialize IMGUI
+    Display::Init();
 
     // Read from a config file
     // Read from persistent data file
