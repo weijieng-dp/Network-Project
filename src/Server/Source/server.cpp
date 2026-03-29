@@ -83,40 +83,17 @@ prior written consent of DigiPen Institute of Technology is prohibited.
 */
 /* End Header
 *******************************************************************/
-
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-
-#include "Windows.h"
-#include "ws2tcpip.h"
-#pragma comment(lib, "ws2_32.lib")
+#include "global.h"         // windows is included in global
 
 #include <iostream>
-#include <string>
-#include <vector>
-#include <map>
-#include <unordered_map>
-#include <mutex>
-#include <thread>
-#include <atomic>
-#include <chrono>
-#include <algorithm>
-#include <sstream>
-#include <fstream>
 #include <iomanip>
-#include <cstring>
-#include <ctime>
-#include <deque>
+#include <algorithm>
 #include <condition_variable>
-#include <functional>
-#include <set>
 #include <random>
-#include <cmath>
 
 #include "utils.h"
 #include "types.h"
-#include "global.h"
+
 #include "house.h"
 #include "persistence.h"
 #include "Bots.h"

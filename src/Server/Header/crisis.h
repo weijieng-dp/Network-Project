@@ -1,6 +1,5 @@
 #include "types.h"
 #include "global.h"
-#include <atomic>
 #include <chrono>
 #include <random>
 

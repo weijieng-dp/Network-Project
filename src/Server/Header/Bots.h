@@ -2,8 +2,6 @@
 #include <array>
 #include "types.h"
 
-
-
 constexpr int TotalBots = 30;
 
 enum Strategy

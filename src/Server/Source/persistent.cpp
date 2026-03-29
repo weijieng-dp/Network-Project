@@ -1,12 +1,8 @@
 #include "persistence.h"
-#include <string>
 #include <iostream>
-#include <mutex>
 #include <fstream>
-
 #include "global.h"
 #include "utils.h"
-
 #include "crypto.h"
 
 /*--------------------------------------------------------------------------

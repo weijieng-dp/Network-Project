@@ -2,7 +2,6 @@
 #pragma once
 #include <string>
 #include <vector>
-#include <cstring>
 #include <random>
 #include <chrono>
 
@@ -11,14 +10,14 @@
 #include <openssl/rand.h>
 
 // Windows CryptoAPI for random number generation
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
+//#ifndef WIN32_LEAN_AND_MEAN
+//#define WIN32_LEAN_AND_MEAN
+//#endif
+//#include <windows.h>
 #include <wincrypt.h>
 #pragma comment(lib, "advapi32.lib")
-#pragma comment(lib, "libcrypto.lib")
-#pragma comment(lib, "libssl.lib")
+//#pragma comment(lib, "libcrypto.lib")
+//#pragma comment(lib, "libssl.lib")
 
 /**
  * Simple Diffie-Hellman key exchange implementation

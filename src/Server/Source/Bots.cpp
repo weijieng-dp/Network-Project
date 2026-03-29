@@ -169,8 +169,6 @@ std::array<Order, 2> BotManager::MarketMakerStrategy(Bot& bot, double const& bes
 	bool canbuy = (qty * bidPrice) < Global::accounts[bot.botname].cash;
 	bool cansell = qty < Global::accounts[bot.botname].holdings[bot.Symbol];
 
-
-
 	Order ordB;
 	Order ordS;
 
