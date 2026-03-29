@@ -52,10 +52,12 @@ public:
 
     std::array<Order,2> MarketMakerStrategy(Bot& bot, double const& bestbid, double const& bestask);
     void MomentumStrategy(Bot& bot, std::function<void(Order&, OrderBook&)> matchingfunction);
-    void TrendFollowingStrategy();
+    void TrendFollowingStrategy(Bot& bot,
+        std::function<void(Order&, OrderBook&)> matchingfunction);
     void MeanReversionStrategy(Bot& bot, std::function<void(Order&, OrderBook&)> matchingfunction);
     void NoiseTradingStrategy(Bot& bot, std::function<void(Order&, OrderBook&)> matchingfunction);
-    void HerdBehaviorStrategy();
+    void HerdBehaviorStrategy(Bot& bot,
+        std::function<void(Order&, OrderBook&)> matchingfunction);
     void PanicSellingStrategy();
     void CancelOrder(Bot& bot);
     void PlaceOrder(Bot& bot,Order ord, char side);

@@ -339,8 +339,83 @@ void BotManager::MomentumStrategy(Bot& bot,
 	}
 }
 
-void BotManager::TrendFollowingStrategy()
+void BotManager::TrendFollowingStrategy(Bot& bot,
+	std::function<void(Order&, OrderBook&)> matchingfunction)
 {
+	auto& book = Global::books[bot.Symbol];
+	auto& house = Global::accounts[bot.botname];
+
+	const auto& log = book.tradeLog;
+
+	const int FAST = 20;
+	const int SLOW = 60;
+
+	if ((int)log.size() < SLOW) return;
+
+	double fastMA = 0.0;
+	for (int i = log.size() - FAST; i < log.size(); i++)
+		fastMA += log[i].price;
+	fastMA /= FAST;
+
+	double slowMA = 0.0;
+	for (int i = log.size() - SLOW; i < log.size(); i++)
+		slowMA += log[i].price;
+	slowMA /= SLOW;
+
+	if (slowMA <= 0) return;
+
+	double signal = (fastMA - slowMA) / slowMA;
+
+	// Trend bot needs stronger confirmation
+	double threshold = 0.003 * (1.0 + book.mmVolatility);
+
+	if (std::abs(signal) < threshold) return;
+
+	uint32_t qty = static_cast<uint32_t>(20 * bot.riskTolerance);
+	if (qty < 1) return;
+
+	Order ord;
+	ord.orderId = Global::nextOrderId.fetch_add(1);
+	ord.username = bot.botname;
+	ord.symbol = bot.Symbol;
+	ord.ts = std::chrono::steady_clock::now();
+	ord.origQty = qty;
+	ord.qty = qty;
+
+	if (signal > 0) // uptrend → buy
+	{
+		if (book.asks.empty()) return;
+		ord.side = 'B';
+		ord.price = book.asks.begin()->first;
+
+		if (house.cash < ord.price * qty) return;
+		house.cash -= ord.price * qty;
+	}
+	else // downtrend → sell
+	{
+		if (book.bids.empty()) return;
+		ord.side = 'S';
+		ord.price = book.bids.begin()->first;
+
+		if (house.holdings[bot.Symbol] < qty) return;
+		house.holdings[bot.Symbol] -= qty;
+	}
+
+	Global::liveOrders[ord.orderId] = ord;
+	house.openOrders[ord.orderId] = ord;
+
+	std::cout << "[TREND] " << bot.botname
+		<< " sym=" << bot.Symbol
+		<< " side=" << ord.side
+		<< " price=" << ord.price
+		<< " signal=" << signal << "\n";
+
+	matchingfunction(ord, book);
+
+	if (ord.qty > 0)
+	{
+		CancelOrder(bot);
+	}
 }
 
 void BotManager::MeanReversionStrategy(Bot& bot,
@@ -520,12 +595,77 @@ void BotManager::NoiseTradingStrategy(
 		house.openOrders.erase(ord.orderId);
 	}
 }
-void BotManager::HerdBehaviorStrategy()
+void BotManager::HerdBehaviorStrategy(Bot& bot,
+	std::function<void(Order&, OrderBook&)> matchingfunction)
 {
-}
+	auto& book = Global::books[bot.Symbol];
+	auto& house = Global::accounts[bot.botname];
+	auto& Log = book.tradeLog;
 
+	int window = 10;
+	if ((int)Log.size() < window) return;
+
+	double buyPressure = 0.0;
+	double sellPressure = 0.0;
+
+	for (int i = Log.size() - window + 1; i < Log.size(); i++)
+	{
+		if (Log[i].price > Log[i - 1].price)
+			buyPressure += Log[i].qty;
+		else
+			sellPressure += Log[i].qty;
+	}
+
+	double total = buyPressure + sellPressure;
+	if (total == 0) return;
+
+	double herdSignal = (buyPressure - sellPressure) / total;
+
+	double threshold = 0.3;
+
+	uint32_t qty = 10;
+
+	Order ord;
+	ord.orderId = Global::nextOrderId.fetch_add(1);
+	ord.username = bot.botname;
+	ord.symbol = bot.Symbol;
+	ord.ts = std::chrono::steady_clock::now();
+	ord.origQty = qty;
+	ord.qty = qty;
+
+	if (herdSignal > threshold && !book.asks.empty())
+	{
+		ord.side = 'B';
+		ord.price = book.asks.begin()->first;
+
+		if (house.cash < ord.price * qty) return;
+		house.cash -= ord.price * qty;
+	}
+	else if (herdSignal < -threshold && !book.bids.empty())
+	{
+		ord.side = 'S';
+		ord.price = book.bids.begin()->first;
+
+		if (house.holdings[bot.Symbol] < qty) return;
+		house.holdings[bot.Symbol] -= qty;
+	}
+	else return;
+
+	Global::liveOrders[ord.orderId] = ord;
+	house.openOrders[ord.orderId] = ord;
+
+	std::cout << "[HERD] " << bot.botname
+		<< " sym=" << bot.Symbol
+		<< " signal=" << herdSignal << "\n";
+
+	matchingfunction(ord, book);
+
+	if (ord.qty > 0)
+		CancelOrder(bot);
+}
 void BotManager::PanicSellingStrategy()
 {
+
 }
 
 void BotManager::CancelOrder(Bot& bot)
@@ -606,8 +746,8 @@ void BotManager::ProcessStrategies(std::function<void(Order& ord, OrderBook& boo
 			MomentumStrategy(bots[i],matchingfunction);
 			break;
 
-			break;
 		case Trend_Following:
+			TrendFollowingStrategy(bots[i], matchingfunction);
 			break;
 		case HerdBehavior:
 			break;
