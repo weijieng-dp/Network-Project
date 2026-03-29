@@ -63,12 +63,6 @@ prior written consent of DigiPen Institute of Technology is prohibited.
 #include <chrono>
 #include <sstream>
 #include <iomanip>
-#include <cstring>
-#include <ctime>
-#include <algorithm>
-#include <cmath>
-#include <deque>
-#include <functional>
 #include "utils.h"
 
 // FTXUI - Terminal UI library for interactive TUI
@@ -121,8 +115,21 @@ static double                           g_cash     = 0.0;
 static std::map<std::string,uint32_t>   g_holdings;
 
 // Local order / trade cache
-struct LocalOrder { uint64_t id; char side; std::string sym; uint32_t qty; double price; };
-struct LocalTrade { uint64_t tradeId; std::string sym; uint32_t qty; double price; char side; std::string dt; };
+struct LocalOrder { 
+    std::string sym{};
+    uint64_t id{}; 
+    double price{};
+    uint32_t qty{};
+    char side{};
+};
+struct LocalTrade { 
+    std::string sym;
+    std::string dt;
+    uint64_t tradeId; 
+    double price;
+    uint32_t qty; 
+    char side;  
+};
 static std::map<uint64_t,LocalOrder>  g_openOrders;
 static std::vector<LocalTrade>        g_trades;
 
@@ -130,7 +137,11 @@ static std::vector<LocalTrade>        g_trades;
 static uint32_t g_udpLastSeq = 0;
 
 // Candlestick chart data
-struct Candle { double open,high,low,close; uint32_t vol; std::string dt; };
+struct Candle { 
+    double open{}, high{}, low{}, close{}; 
+    uint32_t vol{};
+    std::string dt{};
+};
 static std::mutex               g_chartMtx;
 static std::string              g_chartSymbol;
 static std::vector<Candle>      g_chartCandles;
@@ -159,8 +170,21 @@ static ftxui::ScreenInteractive* g_screenPtr = nullptr;
 /*--------------------------------------------------------------------------
  * TUI helpers
  *--------------------------------------------------------------------------*/
+static std::string fmtMoney(double v) { 
+    std::ostringstream s; 
+    s << std::fixed << std::setprecision(2) << v;
+    std::string str{ s.str() };
 
-static std::string fmtMoney(double v) { std::ostringstream s; s<<"$"<<std::fixed<<std::setprecision(2)<<v; return s.str(); }
+    size_t dotPos{ str.find('.') };
+
+    int insertPos{ static_cast<int>(dotPos == std::string::npos ? str.length() - 3 : dotPos - 3) };
+
+    while (insertPos > 0 && str[insertPos - 1] != '-') {
+        str.insert(static_cast<size_t>(insertPos), ",");
+        insertPos -= 3;
+    }
+    return "$" + str;
+}
 static std::string fmtPrice(double v) { std::ostringstream s; s<<std::fixed<<std::setprecision(4)<<v; return s.str(); }
 
 /** Append a message to the TUI log panel and trigger a screen refresh. */
@@ -209,7 +233,10 @@ static void onOrderAck(const char* b, int n, int o) {
     uint64_t oid=0; uint8_t sideU8=0; std::string sym; uint32_t qty=0; double price=0;
     if(!readU64(b,n,o,oid)||!readU8(b,n,o,sideU8)||!readStr1(b,n,o,sym)||!readU32(b,n,o,qty)||!readDouble(b,n,o,price)) return;
     char side=(sideU8==0)?'B':'S';
-    { std::lock_guard<std::mutex> lk(g_stateMtx); g_openOrders[oid]={oid,side,sym,qty,price}; }
+    { 
+        std::lock_guard<std::mutex> lk(g_stateMtx); 
+        g_openOrders[oid] = { sym, oid, price, qty, side };
+    }
     logMsg("ORDER #" + std::to_string(oid) + " ACCEPTED: " +
            std::string(side=='B'?"BUY ":"SELL ") + std::to_string(qty) + "x" + sym + " @ " + fmtPrice(price));
     refreshUI();
@@ -228,7 +255,7 @@ static void onTradeExec(const char* b, int n, int o) {
         std::lock_guard<std::mutex> lk(g_stateMtx);
         if(g_openOrders.count(oid)){ side=g_openOrders[oid].side; g_openOrders[oid].qty=remQty; if(remQty==0) g_openOrders.erase(oid); }
         time_t t=time(nullptr); struct tm tm{}; localtime_s(&tm,&t); char buf[32]; strftime(buf,sizeof(buf),"%H:%M:%S",&tm);
-        g_trades.push_back({oid,sym,fillQty,price,side,buf});
+        g_trades.push_back({ sym, buf, oid, price, fillQty, side});
     }
     logMsg("*** TRADE *** " + std::string(side=='B'?"BOUGHT ":"SOLD ") +
            std::to_string(fillQty) + "x" + sym + " @ " + fmtPrice(price) +
@@ -289,10 +316,14 @@ static void onLogoutOk() {
 
 static void onOrderList(const char* b, int n, int o) {
     uint16_t cnt=0; if(!readU16(b,n,o,cnt)) return;
-    { std::lock_guard<std::mutex> lk(g_stateMtx); g_openOrders.clear();
-      for(uint16_t i=0;i<cnt;++i){ uint64_t oid=0; uint8_t su=0; std::string sym; uint32_t qty=0; double price=0;
-        if(!readU64(b,n,o,oid)||!readU8(b,n,o,su)||!readStr1(b,n,o,sym)||!readU32(b,n,o,qty)||!readDouble(b,n,o,price))break;
-        g_openOrders[oid]={oid,(su==0)?'B':'S',sym,qty,price}; } }
+    { 
+        std::lock_guard<std::mutex> lk(g_stateMtx); g_openOrders.clear();
+        for (uint16_t i = 0; i < cnt; ++i) {
+            uint64_t oid = 0; uint8_t su = 0; std::string sym; uint32_t qty = 0; double price = 0;
+            if (!readU64(b, n, o, oid) || !readU8(b, n, o, su) || !readStr1(b, n, o, sym) || !readU32(b, n, o, qty) || !readDouble(b, n, o, price))break;
+            g_openOrders[oid] = { sym, oid, price, qty, (su == 0) ? 'B' : 'S' };
+        }
+    };
     refreshUI();
 }
 
@@ -302,7 +333,7 @@ static void onTradeList(const char* b, int n, int o) {
     g_trades.clear();
     for(uint16_t i=0;i<cnt;++i){ uint64_t tid=0; std::string sym,dt; uint32_t qty=0; double price=0; uint8_t su=0;
       if(!readU64(b,n,o,tid)||!readStr1(b,n,o,sym)||!readU32(b,n,o,qty)||!readDouble(b,n,o,price)||!readU8(b,n,o,su)||!readStr1(b,n,o,dt))break;
-      g_trades.push_back({tid,sym,qty,price,(su==0)?'B':'S',dt}); }
+      g_trades.push_back({ sym, dt, tid, price, qty, (su == 0) ? 'B' : 'S' }); }
     refreshUI();
 }
 
@@ -400,7 +431,10 @@ static void tcpReceiveThread() {
             }
             double cash=0; readDouble(b,n,o,cash);
             totalValue += cash;
-            oss << "  Cash: $" << cash << "  |  Total Value: $" << totalValue;
+            oss.imbue(std::locale("en_SG.UTF-8"));
+            oss << "Cash: " << std::showbase << std::put_money(cash * 100)
+                << " | Total Value: " << std::showbase << std::put_money(totalValue * 100);
+            //oss << "  Cash: $" << cash << "  |  Total Value: ";// << totalValue;
             logMsg(oss.str());
             break;
         }
