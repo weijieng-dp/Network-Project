@@ -55,6 +55,7 @@ find_package(glm CONFIG REQUIRED)
 find_package(implot CONFIG REQUIRED)
 find_package(rapidjson CONFIG REQUIRED)
 find_package(ftxui CONFIG REQUIRED)
+find_package(OpenSSL REQUIRED)
 
 # ==========================================
 # Subprojects
@@ -73,6 +74,8 @@ target_link_libraries(Server
 	glm::glm
 	implot::implot
 	ws2_32
+	OpenSSL::Crypto
+	OpenSSL::SSL
 )
 
 target_include_directories(Server PRIVATE
@@ -93,6 +96,8 @@ target_link_libraries(Client
 	ftxui::dom
 	ftxui::component
 	ws2_32
+	OpenSSL::Crypto
+	OpenSSL::SSL
 )
 
 target_include_directories(Server PRIVATE

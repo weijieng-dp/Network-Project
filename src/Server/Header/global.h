@@ -58,6 +58,8 @@ public:
 	static std::mutex  printMtx;
 	static std::atomic<bool> running;
 
+	static std::string password;
+
 	/*--------------------------------------------------------------------------
 	 * Conditional orders (stop-loss / take-profit)
 	 *--------------------------------------------------------------------------*/

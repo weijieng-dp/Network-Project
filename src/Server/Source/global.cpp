@@ -32,6 +32,7 @@ std::deque<Global::BroadcastItem>			Global::bcastQueue;
 std::string									Global::persistPath;
 std::mutex									Global::printMtx;
 std::atomic<bool>							Global::running{ true };
+std::string									Global::password;
 
 std::vector<ConditionalOrder>				Global::conditionalOrders;
 std::atomic<uint64_t>						Global::nextCondId{ 1 };

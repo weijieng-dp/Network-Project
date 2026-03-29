@@ -1187,7 +1187,7 @@ static void persistThread() {
 
 int old_main() {
     // --- Step 1: Configuration ---
-    std::string tcpPortStr, udpPortStr, persistPath;
+    std::string tcpPortStr, udpPortStr, persistPath, pw;
     std::cout << "Server TCP Port Number: "; std::getline(std::cin, tcpPortStr);
     while (!tcpPortStr.empty() && (tcpPortStr.back() == '\r' || tcpPortStr.back() == '\n')) tcpPortStr.pop_back();
     std::cout << "Server UDP Port Number: "; std::getline(std::cin, udpPortStr);
@@ -1197,6 +1197,9 @@ int old_main() {
     Global::persistPath = persistPath;
     uint16_t tcpPort = (uint16_t)std::stoi(tcpPortStr);
     uint16_t udpPort = (uint16_t)std::stoi(udpPortStr);
+    std::cout << "Password (for persistence): "; std::getline(std::cin, pw);
+    while (!pw.empty() && (pw.back() == '\r' || pw.back() == '\n')) pw.pop_back();
+    Global::password = pw;
 
     // --- Step 2: Winsock ---
     WSADATA wsaData{};

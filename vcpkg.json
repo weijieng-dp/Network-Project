@@ -14,7 +14,8 @@
     "glm",
     "implot",
     "rapidjson",
-    "ftxui"
+    "ftxui",
+    "openssl"
   ],
   "overrides":[
     { "name": "imgui", "version": "1.91.9#0" },
