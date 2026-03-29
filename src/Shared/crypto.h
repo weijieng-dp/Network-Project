@@ -187,11 +187,11 @@ class AESGCMCipher {
 
         void setKey(const std::string& password, const std::vector<uint8_t>& salt) {
             key.resize(KEY_SIZE);
-            if(PKCS5_PBKDF2_HMAC(password.c_str(), password.size(), salt.data(), salt.size(), 100000, EVP_sha256(), KEY_SIZE, key.data()) != 1)
+            if(PKCS5_PBKDF2_HMAC(password.c_str(), static_cast<int>(password.size()), salt.data(), static_cast<int>(salt.size()), 100000, EVP_sha256(), KEY_SIZE, key.data()) != 1)
                 throw std::runtime_error("Failed to derive AES key from password");
         }
 
-        std::vector<uint8_t> encrypt(const std::vector<uint8_t>& plainTxt) {
+        std::vector<uint8_t> encrypt(const std::vector<uint8_t>& plainTxt, const std::vector<uint8_t>& aad = {}) {
             if(key.empty() || plainTxt.empty()) return plainTxt;
 
             std::vector<uint8_t> iv{ generateIV() };
@@ -221,7 +221,8 @@ class AESGCMCipher {
 
             // Additional Authentication Data (AAD)
             int len{}, finalLen{};
-            if(EVP_EncryptUpdate(ctx, NULL, &len, NULL, 0) != 1) {
+            const uint8_t* aadPtr{ aad.empty() ? nullptr : aad.data() };
+            if(EVP_EncryptUpdate(ctx, NULL, &len, aadPtr, static_cast<int>(aad.size())) != 1) {
                 EVP_CIPHER_CTX_free(ctx);
                 return plainTxt;
             }
@@ -260,7 +261,7 @@ class AESGCMCipher {
 
         // Decrypt with authentication verifcation
         // cipher text includes IV and Tag
-        std::vector<uint8_t> decrypt(const std::vector<uint8_t>& cipherTxtWithIvAndTag) {
+        std::vector<uint8_t> decrypt(const std::vector<uint8_t>& cipherTxtWithIvAndTag, const std::vector<uint8_t>& aad = {}) {
             if(key.empty() || cipherTxtWithIvAndTag.size() < IV_SIZE + TAG_SIZE) return cipherTxtWithIvAndTag;
 
             // Extract IV, Cipher Text, and Tag
@@ -296,7 +297,8 @@ class AESGCMCipher {
 
             // Provide AAD
             int len{}, finalLen{};
-            if(EVP_DecryptUpdate(ctx, NULL, &len, NULL, 0) != 1) {
+            const uint8_t* aadPtr{ aad.empty() ? nullptr : aad.data() };
+            if(EVP_DecryptUpdate(ctx, NULL, &len, aadPtr, static_cast<int>(aad.size())) != 1) {
                 EVP_CIPHER_CTX_free(ctx);
                 return cipherTxtWithIvAndTag;
             }
@@ -330,9 +332,9 @@ class AESGCMCipher {
             std::vector<uint8_t> iv(IV_SIZE);
             HCRYPTPROV prov;
             if(CryptAcquireContext(&prov, NULL, NULL, PROV_RSA_FULL, CRYPT_VERIFYCONTEXT)) {
-                CryptGenRandom(prov, iv.size(), iv.data());
+                CryptGenRandom(prov, static_cast<DWORD>(iv.size()), iv.data());
                 CryptReleaseContext(prov, 0);
-            } else RAND_bytes(iv.data(), iv.size());   // fallback to using OpenSSL RAND
+            } else RAND_bytes(iv.data(), static_cast<int>(iv.size()));   // fallback to using OpenSSL RAND
             return iv;
         }
     private:
