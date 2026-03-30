@@ -308,7 +308,7 @@ static void onServerMsg(const char* b, int n, int o) {
 static std::atomic<bool> g_expectDisconnect{false};  // set before server closes socket
 
 static void onLogoutOk() {
-    g_expectDisconnect = true;  // server will close socket after LOGOUT_OK — don't treat as crash
+    //g_expectDisconnect = true;  // server will close socket after LOGOUT_OK — don't treat as crash
     { std::lock_guard<std::mutex> lk(g_stateMtx); g_loggedIn=false; g_username.clear(); g_cash=0; g_holdings.clear(); g_openOrders.clear(); }
     logMsg("LOGGED OUT - You can /login again or /q to quit.");
     refreshUI();
@@ -470,6 +470,10 @@ static void tcpReceiveThread() {
             logMsg("DH key exchange complete. Secure channel established.");
             break;
         }
+        case CMD_QUIT_OK:
+            g_running = false;
+            if (g_screenPtr) g_screenPtr->Exit();
+            break;
         default: logMsg("[WARN] Unknown server response: "+std::to_string(cmdId)); break;
         }
     }
@@ -630,7 +634,10 @@ static void cmdLogin(const std::string& user, const std::string& pass) {
     else
         logMsg("Logging in as '" + user + "'...");
 }
-static void cmdLogout() { sendFrame(g_tcpSocket,CMD_LOGOUT,{}); }
+static void cmdLogout() { 
+    if (!g_loggedIn) { logMsg("Not logged in."); return; }
+    sendFrame(g_tcpSocket,CMD_LOGOUT,{}); 
+}
 static void cmdPlaceOrder(char side, const std::string& sym, uint32_t qty, double price) {
     if(!g_loggedIn){logMsg("Must be logged in."); return;}
     if(sym.empty()||qty==0||price<=0){logMsg(std::string("Usage: ")+(side=='B'?"/buy":"/sell")+" <SYM> <qty> <price>"); return;}
@@ -655,10 +662,7 @@ static void processCommand(const std::string& line) {
     if(line.empty()) return;
     std::istringstream iss(line); std::string cmd; iss>>cmd;
 
-    if(cmd=="/q"||cmd=="/quit"||cmd=="/exit") {
-        g_running=false;
-        if(g_screenPtr) g_screenPtr->Exit();
-    }
+    if(cmd=="/q"||cmd=="/quit"||cmd=="/exit") { sendFrame(g_tcpSocket, CMD_QUIT, {}); }
     else if(cmd=="/login")   { std::string u,pw; iss>>u>>pw; cmdLogin(u,pw); }
     else if(cmd=="/logout")  { cmdLogout(); }
     else if(cmd=="/buy"||cmd=="/sell") {
