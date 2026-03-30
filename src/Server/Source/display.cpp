@@ -1,5 +1,6 @@
 #include "display.h"
 #include "global.h"
+#include "crisis.h"
 #include <iostream>
 
 GLFWwindow* Display::window;
@@ -272,13 +273,70 @@ void Display::Draw() {
     ImGui_ImplOpenGL3_NewFrame();
     
     ImGui::NewFrame();
+
+    if (ImGui::Begin("Dockspace", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoBringToFrontOnFocus))
+    {
+        ImGui::SetWindowSize(ImVec2{ static_cast<float>(width),  static_cast<float>(height) });
+        // Set the position of the dockspace window just below the menu bar.
+        ImGui::SetWindowPos(ImVec2(0.f, 0.f));
+        ImGui::DockSpace(ImGuiDockNodeFlags_NoResize | ImGuiDockNodeFlags_NoDockingOverCentralNode | ImGuiDockNodeFlags_NoDockingSplit);
+    }
+    ImGui::End();
+
     if (ImGui::Begin("Active Symbols:")){
-        ImGui::Text("wallahi");
+        
     }
     ImGui::End();
 
     if (ImGui::Begin("Crisis Panel")) {
+        ImGui::Text("Current Crisis: ");
 
+        ImGui::SameLine();
+        switch (CrisisManager::getState()) {
+        case CrisisManager::NONE:
+            ImGui::Text("Nothing happening...");
+            break;
+        case CrisisManager::CRAZE:
+            ImGui::Text("CRAZE");
+            break;
+        case CrisisManager::RANDOM:
+            ImGui::Text("RANDOM");
+            break;
+        case CrisisManager::SHOCK:
+            ImGui::Text("SHOCK");
+            break;
+        case CrisisManager::PANIC:
+            ImGui::Text("PANIC");
+            break;
+        }
+
+        ImGui::NewLine();
+        ImGui::NewLine();
+
+        if (ImGui::CollapsingHeader("ADMIN PANEL")) {
+            if (ImGui::Button("  NONE ")) {
+                CrisisManager::setState(CrisisManager::NONE);
+            }
+
+            ImGui::SameLine();
+            if (ImGui::Button(" SHOCK ")) {
+                CrisisManager::setState(CrisisManager::SHOCK);
+            }
+
+            ImGui::SameLine();
+            if (ImGui::Button(" PANIC ")) {
+                CrisisManager::setState(CrisisManager::PANIC);
+            }
+            // New line
+            if (ImGui::Button(" CRAZE ")) {
+                CrisisManager::setState(CrisisManager::CRAZE);
+            }
+
+            ImGui::SameLine();
+            if (ImGui::Button("RANDOM")) {
+                CrisisManager::setState(CrisisManager::RANDOM);
+            }
+        }
     }
     ImGui::End();
 

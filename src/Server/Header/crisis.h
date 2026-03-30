@@ -29,7 +29,7 @@ public:
 	};
 
 	static Crisis getState() { return static_cast<Crisis>(currState.load()); }
-	static void setState(Crisis c) { currState.exchange(static_cast<int>(c)); }
+	static void setState(Crisis c);
 	
 	static void Init();
 	static void Update();

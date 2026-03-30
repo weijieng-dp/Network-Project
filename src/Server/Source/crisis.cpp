@@ -97,3 +97,31 @@ void CrisisManager::Update() {
 		}
 	}
 }
+
+void CrisisManager::setState(Crisis c) {
+
+	currState.exchange(static_cast<int>(c));
+
+	timeSinceCrisis = std::chrono::milliseconds(0);
+	cooldownTime = std::chrono::milliseconds(0);
+
+	switch (c) {
+	case Crisis::PANIC:
+		crisisDuration = std::chrono::milliseconds(panicDur(gen));
+		break;
+	case Crisis::SHOCK:
+		crisisDuration = std::chrono::milliseconds(shockDur(gen));
+		break;
+	case Crisis::CRAZE:
+		crisisDuration = std::chrono::milliseconds(crazeDur(gen));
+		break;
+	case Crisis::RANDOM:
+		crisisDuration = std::chrono::milliseconds(randDur(gen));
+		break;
+	case Crisis::NONE:
+		cooldownTime = std::chrono::milliseconds(300000);
+		crisisDuration = std::chrono::milliseconds(0);
+		break;
+	}
+
+}

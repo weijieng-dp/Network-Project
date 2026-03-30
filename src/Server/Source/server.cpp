@@ -507,8 +507,7 @@ static std::vector<OHLCCandle> buildCandles(const std::vector<TradePoint>& log) 
     if (log.empty()) return {};
     // Group by 15-second buckets for fast chart population with many candles
     // datetime format: "YYYY-MM-DD_HH:MM:SS"
-    struct Bucket { double open, high, low, close; uint32_t vol; std::string label; };
-    std::vector<Bucket> buckets;
+    std::vector<OHLCCandle> buckets;
     std::string curKey;
     for (auto& tp : log) {
         // Extract "HH:MM:SS" and group into 15-second buckets
@@ -548,8 +547,7 @@ static std::vector<OHLCCandle> buildCandles(const std::vector<TradePoint>& log) 
     std::vector<OHLCCandle> result;
     size_t start = buckets.size() > 120 ? buckets.size() - 120 : 0;
     for (size_t i = start; i < buckets.size(); ++i)
-        result.push_back({ buckets[i].open, buckets[i].high, buckets[i].low,
-                          buckets[i].close, buckets[i].vol, buckets[i].label });
+        result.push_back(buckets[i]);
     return result;
 }
 
@@ -1308,7 +1306,7 @@ int main() {
     BotManager::Instance().InitBots();
     CrisisManager::Init();
 
-    // --- Step 7: Start background threads ---
+    // Setup threads
     std::thread bcastThr(udpBroadcastThread);
     std::thread persThr(persistThread);
     std::thread simThr(simulationThread);
@@ -1318,14 +1316,6 @@ int main() {
         CrisisManager::Update();
         Display::Draw();
     }
-
-    // Threads to run:
-    // 1 thread for each client, can be handled by a form of ClientThreadManager
-    // 1 thread for bot simulation
-    // 1 thread for crisis simulation
-    // 1 thread to handle the buy + sell order logic
-    // 1 thread to store persistent data, in case of server crash etc.
-    // Main thread renders ImGUI, and can accept user input to trigger market events.
 
     // Cleanup:
     // Disconnect clients

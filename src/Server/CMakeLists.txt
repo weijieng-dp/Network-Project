@@ -6,6 +6,7 @@ file(GLOB_RECURSE Server_source_files CONFIGURE_DEPENDS
     ${CMAKE_CURRENT_LIST_DIR}/Header/*.h
     ${CMAKE_CURRENT_LIST_DIR}/Source/*.cpp
     ${CMAKE_CURRENT_LIST_DIR}/../Shared/*.h
+    ${CMAKE_CURRENT_LIST_DIR}/../Shared/*.cpp
 )
 
 add_executable(Server
