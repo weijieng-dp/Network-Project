@@ -262,7 +262,7 @@ static void recordTrade(const std::string& sym, uint32_t fill, double fillPx,
         if (book_ref.mmVolatility > 5.0) book_ref.mmVolatility = 5.0;
     }
     book_ref.lastPrice = fillPx; book_ref.volume += fill;
-    book_ref.tradeLog.push_back({ fillPx, fill, tr.datetime });
+    book_ref.tradeLog.push_back({ fillPx, fill, tr.datetime, std::chrono::steady_clock::now() });
 
     // Update buyer — cash was ALREADY reserved at limitPrice on order placement.
     // Refund the price improvement: (limitPrice - fillPx) * fill.

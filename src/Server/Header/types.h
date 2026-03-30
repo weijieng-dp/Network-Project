@@ -31,6 +31,7 @@ struct TradePoint {
     double price; 
     uint32_t qty; 
     std::string datetime; 
+    std::chrono::steady_clock::time_point chronoTimePoint;
 };
 
 /** Price/time-priority order book for one symbol. */

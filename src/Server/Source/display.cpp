@@ -3,6 +3,8 @@
 #include "crisis.h"
 #include "candleplot.h"
 #include <iostream>
+#include <algorithm>
+#include <numeric>
 
 GLFWwindow* Display::window;
 int         Display::width;
@@ -284,7 +286,7 @@ void Display::Draw() {
     }
     ImGui::End();
 
-    static double time{ 5. };
+    static double time{ 0. };
     static double prevTime = glfwGetTime();
     if (ImGui::Begin("Active Symbols:")){
         static ImVec4 bullCol = ImVec4(0.000f, 1.000f, 0.441f, 1.000f);
@@ -293,55 +295,84 @@ void Display::Draw() {
         time += glfwGetTime() - prevTime;
         prevTime = glfwGetTime();
 
-        // Update the chart once every 5s
+        struct plotData {
+            std::vector<double> dates;
+            std::vector<double> opens;
+            std::vector<double> highs;
+            std::vector<double> lows;
+            std::vector<double> closes;
+        };
+
+        static std::unordered_map<std::string, std::vector<TradePoint>> tradeLog;       // Map of SYMBOL to the trade history
+        static std::unordered_map<std::string, std::vector<TradePoint>> newLog;         // Stores the map of the new data from the 5s window
+        static std::unordered_map<std::string, plotData>                plotMap;        // Map of SYMBOL to the extracted plot data
+
+        // Update the values once every 5s
         if (time >= 5.) {
             time = 0;
-
-            std::unordered_map<std::string, std::vector<TradePoint>> tradeLog;
 
             // Making a copy of the trade logs to not "hog" the mutex.
             {
                 std::lock_guard lock{ Global::exMtx };
                 for (const auto& Orderbooks : Global::books) {
+                    newLog[Orderbooks.first] = std::vector<TradePoint>(Orderbooks.second.tradeLog.begin() + tradeLog[Orderbooks.first].size(), Orderbooks.second.tradeLog.end());
                     tradeLog[Orderbooks.first] = Orderbooks.second.tradeLog;
                 }
             }
 
             // Drawing out each plot
-            for (const auto& log : tradeLog) {
-                // Gathering the data first...
+            for (const auto& log :newLog) {
+                if (log.second.empty()) continue;
+
                 std::vector<double> dates;  dates.reserve(log.second.size());
-                std::vector<double> opens;  opens.reserve(log.second.size());
-                std::vector<double> highs;  highs.reserve(log.second.size());
-                std::vector<double> lows;   lows.reserve(log.second.size());
-                std::vector<double> closes; closes.reserve(log.second.size());
-                bool tooltip{ true };
 
+                double high, low, close;
+                double open = -1.f;
                 for (const TradePoint& tp : log.second) {
-                    double l_open = closes.empty() ? tp.price : closes.back();
-                    double l_high = std::max(l_open, tp.price);
-                    double l_low = std::min(l_open, tp.price);
+                    if (open == -1.f) {
+                        if (plotMap[log.first].closes.empty()) open = tp.price;
+                        else open = plotMap[log.first].closes.back();
+                    }
+                    high = std::max(open, tp.price);
+                    low = std::min(open, tp.price);
+                    close = tp.price;
 
-                    opens.push_back(l_open);
-                    highs.push_back(l_high);
-                    lows.push_back(l_low);
-                    closes.push_back(tp.price);
-                    
-
-                    // Datetime format = 2026-03-31_01:51:11
+                    dates.push_back(static_cast<double>((tp.chronoTimePoint).time_since_epoch().count()) / 1000000000);
                 }
 
-                if (ImPlot::BeginPlot(log.first.c_str())) {
+                double a_dates = std::accumulate(dates.begin(), dates.end(), 0.0) / dates.size();
 
-                    ImPlot::SetupAxes(nullptr, nullptr, 0, ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_RangeFit);
-                    ImPlot::SetupAxisScale(ImAxis_X1, ImPlotScale_Time);
-                    ImPlot::SetupAxisFormat(ImAxis_Y1, "$%.0f");
-
-                    ImPlot::EndPlot();
-                }
+                plotMap[log.first].dates.push_back(a_dates);
+                plotMap[log.first].opens.push_back(open);
+                plotMap[log.first].highs.push_back(high);
+                plotMap[log.first].lows.push_back(low);
+                plotMap[log.first].closes.push_back(close);
             }
 
         }
+
+        for (const auto& log : plotMap) {
+            if (log.second.dates.empty()) continue;
+
+
+            if (ImPlot::BeginPlot(log.first.c_str())) {
+
+                bool tooltip{ true };
+
+                double minTime = *std::min_element(log.second.dates.begin(), log.second.dates.end());
+                double maxTime = *std::max_element(log.second.dates.begin(), log.second.dates.end());
+                ImPlot::SetupAxes(nullptr, nullptr, 0, ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_RangeFit);
+                ImPlot::SetupAxisScale(ImAxis_X1, ImPlotScale_Time);
+                ImPlot::SetupAxisFormat(ImAxis_Y1, "$%.0f");
+                ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, minTime,maxTime);
+                MyImPlot::PlotCandlestick(log.first.c_str(), log.second.dates.data(), log.second.opens.data(), log.second.closes.data(), 
+                                          log.second.lows.data(), log.second.highs.data(), log.second.dates.size(), tooltip, 0.25f, bullCol, bearCol);
+                ImPlot::EndPlot();
+
+            }
+        }
+
+
     }
     ImGui::End();
 
