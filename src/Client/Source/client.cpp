@@ -59,12 +59,6 @@ prior written consent of DigiPen Institute of Technology is prohibited.
 #include <chrono>
 #include <sstream>
 #include <iomanip>
-#include <cstring>
-#include <ctime>
-#include <algorithm>
-#include <cmath>
-#include <deque>
-#include <functional>
 #include "utils.h"
 
 // FTXUI - Terminal UI library for interactive TUI
@@ -117,8 +111,21 @@ static double                           g_cash     = 0.0;
 static std::map<std::string,uint32_t>   g_holdings;
 
 // Local order / trade cache
-struct LocalOrder { uint64_t id; char side; std::string sym; uint32_t qty; double price; };
-struct LocalTrade { uint64_t tradeId; std::string sym; uint32_t qty; double price; char side; std::string dt; };
+struct LocalOrder { 
+    std::string sym{};
+    uint64_t id{}; 
+    double price{};
+    uint32_t qty{};
+    char side{};
+};
+struct LocalTrade { 
+    std::string sym;
+    std::string dt;
+    uint64_t tradeId; 
+    double price;
+    uint32_t qty; 
+    char side;  
+};
 static std::map<uint64_t,LocalOrder>  g_openOrders;
 static std::vector<LocalTrade>        g_trades;
 
@@ -126,7 +133,11 @@ static std::vector<LocalTrade>        g_trades;
 static uint32_t g_udpLastSeq = 0;
 
 // Candlestick chart data
-struct Candle { double open,high,low,close; uint32_t vol; std::string dt; };
+struct Candle { 
+    double open{}, high{}, low{}, close{}; 
+    uint32_t vol{};
+    std::string dt{};
+};
 static std::mutex               g_chartMtx;
 static std::string              g_chartSymbol;
 static std::vector<Candle>      g_chartCandles;
@@ -155,8 +166,21 @@ static ftxui::ScreenInteractive* g_screenPtr = nullptr;
 /*--------------------------------------------------------------------------
  * TUI helpers
  *--------------------------------------------------------------------------*/
+static std::string fmtMoney(double v) { 
+    std::ostringstream s; 
+    s << std::fixed << std::setprecision(2) << v;
+    std::string str{ s.str() };
 
-static std::string fmtMoney(double v) { std::ostringstream s; s<<"$"<<std::fixed<<std::setprecision(2)<<v; return s.str(); }
+    size_t dotPos{ str.find('.') };
+
+    int insertPos{ static_cast<int>(dotPos == std::string::npos ? str.length() - 3 : dotPos - 3) };
+
+    while (insertPos > 0 && str[insertPos - 1] != '-') {
+        str.insert(static_cast<size_t>(insertPos), ",");
+        insertPos -= 3;
+    }
+    return "$" + str;
+}
 static std::string fmtPrice(double v) { std::ostringstream s; s<<std::fixed<<std::setprecision(4)<<v; return s.str(); }
 
 /** Append a message to the TUI log panel and trigger a screen refresh. */
@@ -205,7 +229,10 @@ static void onOrderAck(const char* b, int n, int o) {
     uint64_t oid=0; uint8_t sideU8=0; std::string sym; uint32_t qty=0; double price=0;
     if(!readU64(b,n,o,oid)||!readU8(b,n,o,sideU8)||!readStr1(b,n,o,sym)||!readU32(b,n,o,qty)||!readDouble(b,n,o,price)) return;
     char side=(sideU8==0)?'B':'S';
-    { std::lock_guard<std::mutex> lk(g_stateMtx); g_openOrders[oid]={oid,side,sym,qty,price}; }
+    { 
+        std::lock_guard<std::mutex> lk(g_stateMtx); 
+        g_openOrders[oid] = { sym, oid, price, qty, side };
+    }
     logMsg("ORDER #" + std::to_string(oid) + " ACCEPTED: " +
            std::string(side=='B'?"BUY ":"SELL ") + std::to_string(qty) + "x" + sym + " @ " + fmtPrice(price));
     refreshUI();
@@ -224,7 +251,7 @@ static void onTradeExec(const char* b, int n, int o) {
         std::lock_guard<std::mutex> lk(g_stateMtx);
         if(g_openOrders.count(oid)){ side=g_openOrders[oid].side; g_openOrders[oid].qty=remQty; if(remQty==0) g_openOrders.erase(oid); }
         time_t t=time(nullptr); struct tm tm{}; localtime_s(&tm,&t); char buf[32]; strftime(buf,sizeof(buf),"%H:%M:%S",&tm);
-        g_trades.push_back({oid,sym,fillQty,price,side,buf});
+        g_trades.push_back({ sym, buf, oid, price, fillQty, side});
     }
     logMsg("*** TRADE *** " + std::string(side=='B'?"BOUGHT ":"SOLD ") +
            std::to_string(fillQty) + "x" + sym + " @ " + fmtPrice(price) +
@@ -277,7 +304,7 @@ static void onServerMsg(const char* b, int n, int o) {
 static std::atomic<bool> g_expectDisconnect{false};  // set before server closes socket
 
 static void onLogoutOk() {
-    g_expectDisconnect = true;  // server will close socket after LOGOUT_OK — don't treat as crash
+    //g_expectDisconnect = true;  // server will close socket after LOGOUT_OK — don't treat as crash
     { std::lock_guard<std::mutex> lk(g_stateMtx); g_loggedIn=false; g_username.clear(); g_cash=0; g_holdings.clear(); g_openOrders.clear(); }
     logMsg("LOGGED OUT - You can /login again or /q to quit.");
     refreshUI();
@@ -285,10 +312,14 @@ static void onLogoutOk() {
 
 static void onOrderList(const char* b, int n, int o) {
     uint16_t cnt=0; if(!readU16(b,n,o,cnt)) return;
-    { std::lock_guard<std::mutex> lk(g_stateMtx); g_openOrders.clear();
-      for(uint16_t i=0;i<cnt;++i){ uint64_t oid=0; uint8_t su=0; std::string sym; uint32_t qty=0; double price=0;
-        if(!readU64(b,n,o,oid)||!readU8(b,n,o,su)||!readStr1(b,n,o,sym)||!readU32(b,n,o,qty)||!readDouble(b,n,o,price))break;
-        g_openOrders[oid]={oid,(su==0)?'B':'S',sym,qty,price}; } }
+    { 
+        std::lock_guard<std::mutex> lk(g_stateMtx); g_openOrders.clear();
+        for (uint16_t i = 0; i < cnt; ++i) {
+            uint64_t oid = 0; uint8_t su = 0; std::string sym; uint32_t qty = 0; double price = 0;
+            if (!readU64(b, n, o, oid) || !readU8(b, n, o, su) || !readStr1(b, n, o, sym) || !readU32(b, n, o, qty) || !readDouble(b, n, o, price))break;
+            g_openOrders[oid] = { sym, oid, price, qty, (su == 0) ? 'B' : 'S' };
+        }
+    };
     refreshUI();
 }
 
@@ -298,7 +329,7 @@ static void onTradeList(const char* b, int n, int o) {
     g_trades.clear();
     for(uint16_t i=0;i<cnt;++i){ uint64_t tid=0; std::string sym,dt; uint32_t qty=0; double price=0; uint8_t su=0;
       if(!readU64(b,n,o,tid)||!readStr1(b,n,o,sym)||!readU32(b,n,o,qty)||!readDouble(b,n,o,price)||!readU8(b,n,o,su)||!readStr1(b,n,o,dt))break;
-      g_trades.push_back({tid,sym,qty,price,(su==0)?'B':'S',dt}); }
+      g_trades.push_back({ sym, dt, tid, price, qty, (su == 0) ? 'B' : 'S' }); }
     refreshUI();
 }
 
@@ -396,7 +427,10 @@ static void tcpReceiveThread() {
             }
             double cash=0; readDouble(b,n,o,cash);
             totalValue += cash;
-            oss << "  Cash: $" << cash << "  |  Total Value: $" << totalValue;
+            oss.imbue(std::locale("en_SG.UTF-8"));
+            oss << "Cash: " << std::showbase << std::put_money(cash * 100)
+                << " | Total Value: " << std::showbase << std::put_money(totalValue * 100);
+            //oss << "  Cash: $" << cash << "  |  Total Value: ";// << totalValue;
             logMsg(oss.str());
             break;
         }
@@ -432,6 +466,10 @@ static void tcpReceiveThread() {
             logMsg("DH key exchange complete. Secure channel established.");
             break;
         }
+        case CMD_QUIT_OK:
+            g_running = false;
+            if (g_screenPtr) g_screenPtr->Exit();
+            break;
         default: logMsg("[WARN] Unknown server response: "+std::to_string(cmdId)); break;
         }
     }
@@ -520,8 +558,20 @@ static bool performDHHandshake() {
 }
 
 static void cmdLogin(const std::string& user, const std::string& pass) {
-    if(user.empty()||pass.empty()){logMsg("Usage: /login <username> <password>"); return;}
-    {std::lock_guard<std::mutex> lk(g_stateMtx); g_username=user;}
+    if (g_loggedIn) {   // if client is already logged, don't process login command till logout
+        logMsg("Already logged in as [" + g_username + "]. Logout with /logout first.");
+        return;
+    }
+
+    if(user.empty() || pass.empty()) {  // Invalid arguments provided
+        logMsg("Usage: /login <username> <password>"); 
+        return;
+    }
+
+    {   // Update username
+        std::lock_guard<std::mutex> lk(g_stateMtx); 
+        g_username = user;
+    }
 
     // Perform DH handshake if not already done
     if (!g_dhEstablished.load()) {
@@ -580,7 +630,10 @@ static void cmdLogin(const std::string& user, const std::string& pass) {
     else
         logMsg("Logging in as '" + user + "'...");
 }
-static void cmdLogout() { sendFrame(g_tcpSocket,CMD_LOGOUT,{}); }
+static void cmdLogout() { 
+    if (!g_loggedIn) { logMsg("Not logged in."); return; }
+    sendFrame(g_tcpSocket,CMD_LOGOUT,{}); 
+}
 static void cmdPlaceOrder(char side, const std::string& sym, uint32_t qty, double price) {
     if(!g_loggedIn){logMsg("Must be logged in."); return;}
     if(sym.empty()||qty==0||price<=0){logMsg(std::string("Usage: ")+(side=='B'?"/buy":"/sell")+" <SYM> <qty> <price>"); return;}
@@ -605,10 +658,7 @@ static void processCommand(const std::string& line) {
     if(line.empty()) return;
     std::istringstream iss(line); std::string cmd; iss>>cmd;
 
-    if(cmd=="/q"||cmd=="/quit"||cmd=="/exit") {
-        g_running=false;
-        if(g_screenPtr) g_screenPtr->Exit();
-    }
+    if(cmd=="/q"||cmd=="/quit"||cmd=="/exit") { sendFrame(g_tcpSocket, CMD_QUIT, {}); }
     else if(cmd=="/login")   { std::string u,pw; iss>>u>>pw; cmdLogin(u,pw); }
     else if(cmd=="/logout")  { cmdLogout(); }
     else if(cmd=="/buy"||cmd=="/sell") {

@@ -89,30 +89,16 @@ prior written consent of DigiPen Institute of Technology is prohibited.
 #endif
 
 #include <iostream>
-#include <string>
-#include <vector>
-#include <map>
-#include <unordered_map>
-#include <mutex>
-#include <thread>
-#include <atomic>
-#include <chrono>
-#include <algorithm>
-#include <sstream>
-#include <fstream>
 #include <iomanip>
-#include <cstring>
-#include <ctime>
-#include <deque>
+#include <algorithm>
 #include <condition_variable>
-#include <functional>
-#include <set>
 #include <random>
-#include <cmath>
 
 #include "utils.h"
 #include "types.h"
 #include "global.h"
+
+#include "house.h"
 #include "persistence.h"
 #include "Bots.h"
 #include "crisis.h"
@@ -286,8 +272,8 @@ static void recordTrade(const std::string& sym, uint32_t fill, double fillPx,
     ba.cash += (buyOrd.price - fillPx) * fill;   // refund price improvement
     // Update average cost basis (weighted average)
     uint32_t oldQty = ba.holdings.count(sym) ? ba.holdings[sym] : 0;
-    double oldCost = ba.avgCost.count(sym) ? ba.avgCost[sym] : 0;
-    ba.avgCost[sym] = (oldQty > 0) ? (oldCost * oldQty + fillPx * fill) / (oldQty + fill) : fillPx;
+    double oldAvgCost = ba.avgCost.count(sym) ? ba.avgCost[sym] : 0;
+    ba.avgCost[sym] = (oldQty > 0) ? (oldAvgCost * oldQty + fillPx * fill) / (oldQty + fill) : fillPx;
     ba.holdings[sym] += fill;
     ba.trades.push_back(tr);
     if (ba.openOrders.count(buyOrd.orderId)) {
@@ -676,6 +662,11 @@ static void clientSession(SOCKET sock) {
             break;
         }
         case CMD_LOGIN: {
+            if (!username.empty()) {    // Reject login without logout
+                sendServerMsg(sock, "Already logged in as [" + username + "]. Please logout first.");
+                break;
+            }
+
             std::string user, pass;
             // This reads: [UsernameLen:1] [Username:var]
             if (!readStr1(payload.data(), (int)payLen, o, user) || user.empty()) {
@@ -689,6 +680,17 @@ static void clientSession(SOCKET sock) {
                 std::lock_guard<std::mutex> plk(Global::printMtx);
                 std::cout << "[LOGIN] Received username: '" << user
                     << "' (len=" << user.length() << ")\n";
+            }
+
+            // Check if Already logged in
+            {
+                std::lock_guard<std::mutex> lk(Global::userSockMtx);
+                if (Global::userSockets.count(user)) {
+                    std::vector<char> p;
+                    pushStr1(p, "User already logged in from another session.");
+                    sendFrame(sock, CMD_LOGIN_FAIL, p);
+                    break;
+                }
             }
 
             // ===== READ FLAG =====
@@ -789,9 +791,6 @@ static void clientSession(SOCKET sock) {
                     << (encFlag == 1 ? "encrypted" : "plaintext")
                     << " password (len=" << pass.length() << ")\n";
             }
-
-            // Reject re-login without logout
-            if (!username.empty()) { sendServerMsg(sock, "Already logged in as '" + username + "'."); break; }
             // Block login as the house/market-maker account
             if (user == Global::HOUSE_USER) { std::vector<char> p; pushStr1(p, "Reserved system account."); sendFrame(sock, CMD_LOGIN_FAIL, p); break; }
             {
@@ -828,7 +827,14 @@ static void clientSession(SOCKET sock) {
         }
 
         case CMD_LOGOUT: {
+            if (username.empty()) { sendServerMsg(sock, "Not loggeed in."); break; }
+            { std::lock_guard<std::mutex> lk(Global::userSockMtx); Global::userSockets.erase(username); }
             sendFrame(sock, CMD_LOGOUT_OK, {});
+            username.clear(); break;
+        }
+
+        case CMD_QUIT: {
+            sendFrame(sock, CMD_QUIT_OK, {});
             cleanup(); return;
         }
 

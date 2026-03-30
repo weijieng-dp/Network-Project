@@ -1,4 +1,3 @@
-
 #include "house.h"
 #include <iostream>
 

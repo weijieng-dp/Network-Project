@@ -1,5 +1,8 @@
 // static class to store all global variables.
 #pragma once
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
 #include "WinSock2.h"
 #include "Windows.h"
 #include "ws2tcpip.h"
@@ -8,6 +11,7 @@
 #include <mutex>
 #include <unordered_map>
 #include <deque>
+#include <atomic>
 
 #include "types.h"
 #include "crypto.h"
@@ -65,6 +69,8 @@ public:
 	static std::string persistPath;
 	static std::mutex  printMtx;
 	static std::atomic<bool> running;
+
+	static std::string password;
 
 	/*--------------------------------------------------------------------------
 	 * Conditional orders (stop-loss / take-profit)
