@@ -117,7 +117,10 @@ prior written consent of DigiPen Institute of Technology is prohibited.
 #include "utils.h"
 #include "types.h"
 #include "global.h"
+#include "house.h"
 #include "persistence.h"
+#include "Bots.h"
+#include "crisis.h"
 
 static const int    MAX_PAYLOAD = 8192;         // max TCP payload bytes
 static const double PERSIST_INTERVAL = 5.0;     // seconds between disk flushes
@@ -128,7 +131,7 @@ static const int    WORKER_THREADS = 20;        // pre-spawned worker pool size
  *--------------------------------------------------------------------------*/
 
  /**
-  * @brief Send a framed TCP response to a client (thread-safe).
+  * @brief Send a framed TCP response to a client
   *
   * Frame layout: CmdID(1) + PayloadLen(2) + Payload(var)
   * Uses a per-socket send mutex to prevent concurrent sends from corrupting
@@ -155,7 +158,6 @@ static bool sendServerMsg(SOCKET s, const std::string& msg) {
 /**
  * @brief Simple hash function for password storage.
  *        Uses djb2 + salted with username for basic security.
- *        (Not cryptographic — suitable for a school project.)
  */
 static std::string hashPassword(const std::string& user, const std::string& pass) {
     std::string salted = user + ":" + pass;
@@ -201,237 +203,6 @@ static const std::unordered_map<std::string, double> CRISIS_VULNERABILITY = {
     {"AAPL", 0.7}, {"GOOGL", 0.8}, {"MSFT", 0.6}, {"TSLA", 1.4}, {"AMZN", 1.0}
 };
 
-
-/*--------------------------------------------------------------------------
- * House / Market-Maker account seeding
- *--------------------------------------------------------------------------*/
-
-static const std::string HOUSE_USER = "EXCHANGE";
-
-/**
- * @brief Reference prices for initial market-maker quotes.
- *        The EXCHANGE account posts sell orders at refPrice and buy orders
- *        at (refPrice - spread) so that clients can immediately trade.
- */
-static const std::map<std::string, double> REFERENCE_PRICES = {
-    {"AAPL", 180.00}, {"GOOGL", 170.00}, {"MSFT", 420.00},
-    {"TSLA", 250.00}, {"AMZN", 185.00}
-};
-
-static const uint32_t HOUSE_SHARES_PER_SYM = 1000000;       // 1M shares each
-static const double   HOUSE_CASH = 1e10;                    // $10 billion
-// Realistic market maker constants (multi-level depth, inventory-aware)
-static const int      MM_DEPTH_LEVELS = 5;                  // 5 price levels each side
-static const uint32_t MM_BASE_QTY = 100;                    // base order size at best bid/ask
-static const double   MM_BASE_SPREAD = 0.20;                // $0.20 minimum spread
-static const double   MM_LEVEL_STEP = 0.10;                 // $0.10 between each depth level
-static const double   MM_QTY_DECAY = 0.7;                   // each level is 70% of previous size
-static const double   MM_INVENTORY_TARGET = 1.0;            // target: hold 100% of initial shares (no initial skew)
-static const double   MM_INVENTORY_SKEW = 0.30;             // max spread skew from inventory imbalance
-static const double   MM_VOLATILITY_MULT = 0.5;             // spread widens by vol * this factor
-
-// --- Simulation bot config (background trading to make charts move) ---
-static const double   SIM_INTERVAL_MS = 300;                // base interval — fast for many trades per candle
-static const double   SIM_JITTER_MS = 200;                  // random jitter ± (ms)
-static const uint32_t SIM_QTY_MIN = 50;                     // min shares per bot order
-static const uint32_t SIM_QTY_MAX = 200;                    // max shares per bot order
-static const int      SIM_BOT_COUNT = 40;                   // 20 bulls (BOT_1-20) + 20 bears (BOT_21-40)
-
-/**
- * @brief Create the EXCHANGE account (if not already present) and seed the
- *        order books with initial bid/ask quotes so clients can trade
- *        immediately.
- *
- * Called once at startup, AFTER loadPersistentData().  Must be called with NO other
- * threads running (single-threaded init) so no mutex needed.
- */
- // Forward declaration
-static bool postHouseOrder(const std::string& sym, char side, double price, uint32_t qty);
-
-static void seedMarketMaker() {
-    // If the EXCHANGE account was already loaded from persistence, skip seeding
-    // to avoid duplicating orders and inflating the account on every restart.
-    if (Global::accounts.count(HOUSE_USER)) {
-        std::cout << "[HOUSE] EXCHANGE account found in persisted data skipping seed.\n";
-        std::cout << "[HOUSE] Cash: $" << std::fixed << std::setprecision(2)
-            << Global::accounts[HOUSE_USER].cash << ", holdings: ";
-        for (auto& [sym, qty] : Global::accounts[HOUSE_USER].holdings) std::cout << sym << "=" << qty << " ";
-        std::cout << "\n\n";
-        return;
-    }
-
-    // Create the house account fresh (first run only)
-    Account& house = Global::accounts[HOUSE_USER];
-    house.username = HOUSE_USER;
-    house.cash = HOUSE_CASH;
-    for (auto& sym : Global::SYMBOLS)
-        house.holdings[sym] = HOUSE_SHARES_PER_SYM;
-
-    std::cout << "[HOUSE] EXCHANGE account: $" << std::fixed << std::setprecision(0)
-        << house.cash << ", " << HOUSE_SHARES_PER_SYM << " shares/symbol\n";
-
-    // Seed multi-level depth for each symbol using requoteMarketMaker logic
-    for (auto& sym : Global::SYMBOLS) {
-        double refPx = REFERENCE_PRICES.count(sym) ? REFERENCE_PRICES.at(sym) : 100.0;
-        OrderBook& book = Global::books[sym];
-        book.lastPrice = refPx;
-        book.tradeLog.push_back({ refPx, 0, nowString() });
-
-        // Post 5 levels each side at reference price
-        double spread = MM_BASE_SPREAD + book.mmVolatility * MM_VOLATILITY_MULT;
-        for (int i = 0; i < MM_DEPTH_LEVELS; ++i) {
-            double levelOffset = i * MM_LEVEL_STEP;
-            uint32_t qty = (uint32_t)(MM_BASE_QTY * std::pow(MM_QTY_DECAY, i));
-            if (qty < 10) qty = 10;
-
-            double askPx = refPx + spread / 2.0 + levelOffset;
-            double bidPx = refPx - spread / 2.0 - levelOffset;
-            if (bidPx < 0.01) bidPx = 0.01;
-
-            postHouseOrder(sym, 'S', askPx, qty);
-            postHouseOrder(sym, 'B', bidPx, qty);
-        }
-    }
-
-    std::cout << "[HOUSE] Market maker seeded " << Global::SYMBOLS.size() * MM_DEPTH_LEVELS * 2
-        << " orders placed (" << MM_DEPTH_LEVELS << " levels/side).\n\n";
-}
-
-/*--------------------------------------------------------------------------
- * Continuous Market-Maker  (models real-world designated market makers)
- *--------------------------------------------------------------------------*
- * Real exchanges (NYSE, NASDAQ) have Designated Market Makers (DMMs) that
- * are obligated to continuously quote both a bid and an ask for their
- * assigned symbols.  The exchange itself never owns shares — it is purely
- * a matching venue.  The DMM profits from the bid-ask spread.
- *
- * Our EXCHANGE account models a DMM:
- *   - Always maintains one resting BID and one resting ASK per symbol.
- *   - When its ask is hit (sold shares to a client), it posts a new ask
- *     from its remaining inventory.
- *   - When its bid is hit (bought shares from a client), it posts a new
- *     ask to recycle those shares back to the market.
- *   - Quotes track the last trade price (price discovery) with a spread.
- *   - As long as the EXCHANGE has inventory/cash, liquidity never dries up.
- *--------------------------------------------------------------------------*/
-
- /**
-  * @brief Post a single resting order for the EXCHANGE market maker.
-  *
-  * Directly inserts into the order book (no matching — the MM is passive).
-  * Reserves the appropriate funds/shares from the EXCHANGE account.
-  *
-  * Called with Global::exMtx held.
-  * @return true if order was posted, false if insufficient inventory/cash.
-  */
-static bool postHouseOrder(const std::string& sym, char side, double price, uint32_t qty) {
-    Account& house = Global::accounts[HOUSE_USER];
-
-    if (side == 'S') {
-        uint32_t avail = house.holdings.count(sym) ? house.holdings[sym] : 0;
-        if (avail == 0) return false;
-        qty = std::min(qty, avail);
-        house.holdings[sym] -= qty;
-        if (house.holdings[sym] == 0) house.holdings.erase(sym);
-    }
-    else {
-        double cost = price * qty;
-        if (house.cash < cost) return false;
-        house.cash -= cost;
-    }
-
-    uint64_t oid = Global::nextOrderId.fetch_add(1);
-    Order ord;
-    ord.orderId = oid; ord.username = HOUSE_USER; ord.side = side;
-    ord.symbol = sym; ord.qty = qty; ord.origQty = qty; ord.price = price;
-    ord.ts = std::chrono::steady_clock::now();
-
-    OrderBook& book = Global::books[sym];
-    if (side == 'B') book.bids[price][oid] = ord;
-    else            book.asks[price][oid] = ord;
-    Global::liveOrders[oid] = ord;
-    house.openOrders[oid] = ord;
-
-    {
-        std::lock_guard<std::mutex> plk(Global::printMtx);
-        std::cout << "[MM " << (side == 'B' ? "BID" : "ASK") << "] " << sym
-            << " " << qty << " @ " << std::fixed << std::setprecision(2) << price
-            << "  (order #" << oid << ")\n";
-    }
-    return true;
-}
-
-/**
- * @brief Ensure the EXCHANGE market maker has both a bid and an ask for a symbol.
- *
- * Called after every trade involving the EXCHANGE.  Mirrors how a real DMM
- * re-quotes after a fill:
- *   1. Check if an ask exists for this symbol from EXCHANGE.  If not, post one.
- *   2. Check if a bid exists for this symbol from EXCHANGE.  If not, post one.
- *   3. Price tracks the last trade price ± half the spread (price discovery).
- *
- * Called with Global::exMtx held.
- */
-static void requoteMarketMaker(const std::string& sym) {
-    if (!Global::accounts.count(HOUSE_USER)) return;
-    Account& house = Global::accounts[HOUSE_USER];
-    OrderBook& book = Global::books[sym];
-
-    // Midpoint tracks last trade price (price discovery)
-    double mid = book.lastPrice;
-    if (mid <= 0) mid = REFERENCE_PRICES.count(sym) ? REFERENCE_PRICES.at(sym) : 100.0;
-
-    // Cancel ALL existing EXCHANGE orders for this symbol
-    std::vector<uint64_t> toCancel;
-    for (auto& [price, lvl] : book.asks)
-        for (auto& [oid, ord] : lvl)
-            if (ord.username == HOUSE_USER) toCancel.push_back(oid);
-    for (auto& [price, lvl] : book.bids)
-        for (auto& [oid, ord] : lvl)
-            if (ord.username == HOUSE_USER) toCancel.push_back(oid);
-    for (uint64_t oid : toCancel) {
-        auto it = Global::liveOrders.find(oid);
-        if (it == Global::liveOrders.end()) continue;
-        Order& ord = it->second;
-        if (ord.side == 'B') {
-            house.cash += ord.price * ord.qty;
-            book.bids[ord.price].erase(oid);
-            if (book.bids[ord.price].empty()) book.bids.erase(ord.price);
-        }
-        else {
-            house.holdings[sym] += ord.qty;
-            book.asks[ord.price].erase(oid);
-            if (book.asks[ord.price].empty()) book.asks.erase(ord.price);
-        }
-        Global::liveOrders.erase(oid);
-        house.openOrders.erase(oid);
-    }
-
-    // Inventory-aware spread: skew quotes to reduce imbalance
-    uint32_t currentHoldings = house.holdings.count(sym) ? house.holdings[sym] : 0;
-    double inventoryRatio = (double)currentHoldings / (double)HOUSE_SHARES_PER_SYM;
-    double imbalance = inventoryRatio - MM_INVENTORY_TARGET;  // >0 = overloaded, <0 = underweight
-
-    // Dynamic spread: widens with volatility
-    double spread = MM_BASE_SPREAD + book.mmVolatility * MM_VOLATILITY_MULT;
-
-    // Post multi-level depth (5 ask + 5 bid levels)
-    for (int i = 0; i < MM_DEPTH_LEVELS; ++i) {
-        double levelOffset = i * MM_LEVEL_STEP;
-        uint32_t qty = (uint32_t)(MM_BASE_QTY * std::pow(MM_QTY_DECAY, i));
-        if (qty < 10) qty = 10;
-
-        // Inventory skew shifts all prices to reduce imbalance
-        double skew = imbalance * MM_INVENTORY_SKEW;
-
-        double askPx = mid + spread / 2.0 + levelOffset - skew;
-        double bidPx = mid - spread / 2.0 - levelOffset - skew;
-        if (bidPx < 0.01) bidPx = 0.01;
-
-        postHouseOrder(sym, 'S', askPx, qty);
-        postHouseOrder(sym, 'B', bidPx, qty);
-    }
-}
 
 /*--------------------------------------------------------------------------
  * UDP broadcast helpers
@@ -492,14 +263,18 @@ static void pushTradeExec(const std::string& username, uint64_t orderId,
     if (sock == INVALID_SOCKET) return;
 
     std::vector<char> p;
-    pushU64(p, orderId); pushU32(p, fillQty); pushDouble(p, fillPx);
-    pushU32(p, remQty); pushStr1(p, sym);
+
+    pushU64(p, orderId); 
+    pushU32(p, fillQty); 
+    pushDouble(p, fillPx);
+    pushU32(p, remQty); 
+    pushStr1(p, sym);
+
     sendFrame(sock, CMD_TRADE_EXEC, p);
 }
 
 // Forward declarations for mutual references
 static void matchOrders(Order& ord, OrderBook& book);
-static void requoteMarketMaker(const std::string& sym);
 
 /**
  * @brief Record one fill, update both accounts atomically, push notifications.
@@ -508,17 +283,22 @@ static void requoteMarketMaker(const std::string& sym);
 static void recordTrade(const std::string& sym, uint32_t fill, double fillPx,
     Order& buyOrd, Order& sellOrd) {
     Trade tr;
-    tr.tradeId = Global::nextTradeId.fetch_add(1); tr.symbol = sym;
-    tr.qty = fill; tr.price = fillPx;
-    tr.buyUser = buyOrd.username; tr.sellUser = sellOrd.username;
-    tr.datetime = nowString();
+    tr.tradeId =    Global::nextTradeId.fetch_add(1); 
+    tr.symbol =     sym;
+    tr.qty =        fill; 
+    tr.price =      fillPx;
+    tr.buyUser =    buyOrd.username;
+    tr.sellUser =   sellOrd.username;
+    tr.datetime =   nowString();
+
     Global::allTrades.push_back(tr);
 
     auto& book_ref = Global::books[sym];
     // Update MM volatility (EMA of price change magnitude)
     if (book_ref.lastPrice > 0) {
-        double pctChange = std::abs(fillPx - book_ref.lastPrice) / (std::max)(book_ref.lastPrice, 0.01);
+        double pctChange = std::abs(fillPx - book_ref.lastPrice) / std::max(book_ref.lastPrice, 0.01);
         book_ref.mmVolatility = book_ref.mmVolatility * 0.95 + pctChange * 100.0 * 0.05;
+
         if (book_ref.mmVolatility < 0.2) book_ref.mmVolatility = 0.2;
         if (book_ref.mmVolatility > 5.0) book_ref.mmVolatility = 5.0;
     }
@@ -560,6 +340,7 @@ static void recordTrade(const std::string& sym, uint32_t fill, double fillPx,
 
     uint32_t buyRem = buyOrd.qty - fill;
     uint32_t sellRem = sellOrd.qty - fill;
+
     pushTradeExec(buyOrd.username, buyOrd.orderId, fill, fillPx, buyRem, sym);
     pushTradeExec(sellOrd.username, sellOrd.orderId, fill, fillPx, sellRem, sym);
     enqueueBroadcast(sym);
@@ -600,37 +381,53 @@ static void checkConditionalOrders(const std::string& sym) {
 
         uint64_t oid = Global::nextOrderId.fetch_add(1);
         Order sord;
-        sord.orderId = oid; sord.username = co.username; sord.side = 'S';
-        sord.symbol = sym; sord.qty = sellQty; sord.origQty = sellQty;
-        sord.price = sellPrice;
-        sord.ts = std::chrono::steady_clock::now();
+
+        sord.orderId =      oid; 
+        sord.username =     co.username; 
+        sord.side =         'S';
+        sord.symbol =       sym; 
+        sord.qty =          sellQty; 
+        sord.origQty =      sellQty;
+        sord.price =        sellPrice;
+        sord.ts =           std::chrono::steady_clock::now();
+
         acc.openOrders[oid] = sord;
 
         matchOrders(sord, book);
-        requoteMarketMaker(sym);
+        /***************************************************************put market maker logic here****************************************************************/
+ 
 
         if (sord.qty > 0) {
             acc.holdings[sym] += sord.qty;
+
             if (Global::liveOrders.count(oid)) {
+
                 book.asks[sord.price].erase(oid);
                 if (book.asks[sord.price].empty()) book.asks.erase(sord.price);
                 Global::liveOrders.erase(oid);
+
             }
+
             acc.openOrders.erase(oid);
         }
 
         uint32_t filled = sellQty - sord.qty;
         std::string typeStr = (co.type == 'S') ? "STOP-LOSS" : "TAKE-PROFIT";
+
         {
             SOCKET usock = INVALID_SOCKET;
             std::lock_guard<std::mutex> lk2(Global::userSockMtx);
             auto it2 = Global::userSockets.find(co.username);
+
             if (it2 != Global::userSockets.end()) usock = it2->second;
+
             if (usock != INVALID_SOCKET) {
+
                 std::ostringstream oss;
                 oss << typeStr << " TRIGGERED: sold " << filled << "x" << sym
                     << " @ $" << std::fixed << std::setprecision(2) << lastPx
                     << " (trigger was $" << co.triggerPrice << ")";
+
                 if (sord.qty > 0) oss << " [" << sord.qty << " unfilled]";
                 sendServerMsg(usock, oss.str());
             }
@@ -653,28 +450,48 @@ static void checkConditionalOrders(const std::string& sym) {
 static void matchOrders(Order& ord, OrderBook& book) {
     if (ord.side == 'B') {
         for (auto lvlIt = book.asks.begin(); lvlIt != book.asks.end() && ord.qty > 0;) {
+
             if (ord.price < lvlIt->first) break;
+
             auto& lvl = lvlIt->second;
+
             for (auto oit = lvl.begin(); oit != lvl.end() && ord.qty > 0;) {
+
                 Order& r = oit->second;
                 uint32_t fill = std::min(ord.qty, r.qty);
                 recordTrade(ord.symbol, fill, lvlIt->first, ord, r);
-                ord.qty -= fill; r.qty -= fill; Global::liveOrders[r.orderId].qty = r.qty;
+
+                ord.qty -= fill; 
+                r.qty -= fill; 
+                Global::liveOrders[r.orderId].qty = r.qty; 
+                Global::liveOrders[ord.orderId].qty = ord.qty;
+
                 if (r.qty == 0) { Global::liveOrders.erase(r.orderId); oit = lvl.erase(oit); }
                 else ++oit;
+
             }
+
             if (lvl.empty()) lvlIt = book.asks.erase(lvlIt); else ++lvlIt;
         }
     }
     else {
         for (auto lvlIt = book.bids.begin(); lvlIt != book.bids.end() && ord.qty > 0;) {
+
             if (ord.price > lvlIt->first) break;
+
             auto& lvl = lvlIt->second;
+
             for (auto oit = lvl.begin(); oit != lvl.end() && ord.qty > 0;) {
+
                 Order& r = oit->second;
                 uint32_t fill = std::min(ord.qty, r.qty);
                 recordTrade(ord.symbol, fill, lvlIt->first, r, ord);
-                ord.qty -= fill; r.qty -= fill; Global::liveOrders[r.orderId].qty = r.qty;
+
+                ord.qty -= fill; 
+                r.qty -= fill; 
+                Global::liveOrders[r.orderId].qty = r.qty; 
+                Global::liveOrders[ord.orderId].qty = ord.qty;
+
                 if (r.qty == 0) { Global::liveOrders.erase(r.orderId); oit = lvl.erase(oit); }
                 else ++oit;
             }
@@ -683,30 +500,9 @@ static void matchOrders(Order& ord, OrderBook& book) {
     }
     if (ord.qty > 0) {
         if (ord.side == 'B') book.bids[ord.price][ord.orderId] = ord;
-        else              book.asks[ord.price][ord.orderId] = ord;
+        else                 book.asks[ord.price][ord.orderId] = ord;
         Global::liveOrders[ord.orderId] = ord;
     }
-}
-
-/*--------------------------------------------------------------------------
- * Background simulation thread — virtual bots trade to make charts move
- *--------------------------------------------------------------------------*/
-
- /**
-  * @brief Creates bot accounts (BOT_1, BOT_2, BOT_3) with large funds.
-  * Called once at startup. NOT thread-safe — call before starting threads.
-  */
-static void seedBotAccounts() {
-    for (int i = 0; i < SIM_BOT_COUNT; ++i) {
-        std::string name = "BOT_" + std::to_string(i + 1);
-        if (!Global::accounts.count(name)) {
-            Account& bot = Global::accounts[name];
-            bot.username = name;
-            bot.cash = 1e9;
-            for (auto& sym : Global::SYMBOLS) bot.holdings[sym] = 500000;
-        }
-    }
-    std::cout << "[SIM] " << SIM_BOT_COUNT << " bot accounts ready.\n";
 }
 
 /**
@@ -719,310 +515,22 @@ static void seedBotAccounts() {
  * for a while then reverse — mimicking real market behavior.
  */
 static void simulationThread() {
-    std::mt19937 rng(std::random_device{}());
-    std::uniform_int_distribution<int>      symDist(0, (int)Global::SYMBOLS.size() - 1);
-    std::uniform_int_distribution<int>      botDist(1, SIM_BOT_COUNT);
-    std::uniform_int_distribution<uint32_t> qtyDist(SIM_QTY_MIN, SIM_QTY_MAX);
-    std::uniform_real_distribution<double>  jitterDist(-SIM_JITTER_MS, SIM_JITTER_MS);
-    std::uniform_real_distribution<double>  coin(0.0, 1.0);
 
-    // Per-symbol state
-    struct SymState {
-        double sentiment = 0.0;       // directional bias [-5, +5]
-        double volatility = 1.0;      // current volatility multiplier [0.3, 3.0]
-        int    burstRemain = 0;       // trades left in current burst
-        bool   burstBuy = true;       // burst direction
-    };
-    std::map<std::string, SymState> symState;
-    for (auto& sym : Global::SYMBOLS) symState[sym] = {};
+    
+    while (Global::running.load())
+    {
+        {
+            std::lock_guard<std::mutex> lk(Global::exMtx);
 
-    uint64_t tick = 0;
+            BotManager::Instance().ProcessMarketMaker(matchOrders);
+            BotManager::Instance().ProcessStrategies(matchOrders);
+            CrisisManager::Update();
 
-    std::cout << "[SIM] Simulation thread started (interval ~"
-        << (int)SIM_INTERVAL_MS << "ms).\n";
-
-    while (Global::running.load()) {
-        // ── Crisis phase machine (runs every tick) ──
-        auto nowTP = std::chrono::steady_clock::now();
-        int64_t nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-            nowTP.time_since_epoch()).count();
-        CrisisPhase cPhase = (CrisisPhase)g_crisis.phase.load();
-        double crisisIntensity = g_crisis.intensity.load();
-
-        if (cPhase != CrisisPhase::NONE) {
-            int64_t elapsed = nowMs - g_crisis.phaseStartMs.load();
-            bool transitioned = false;
-
-            if (cPhase == CrisisPhase::SHOCK && elapsed > CRISIS_SHOCK_MS) {
-                g_crisis.phase.store((int)CrisisPhase::PANIC);
-                g_crisis.phaseStartMs.store(nowMs);
-                g_crisis.intensity.store(0.85);
-                broadcastServerMsg("*** MARKETS: Circuit breakers tripped. "
-                    "Institutional selling accelerates. ***");
-                transitioned = true;
-            }
-            else if (cPhase == CrisisPhase::PANIC && elapsed > CRISIS_PANIC_MS) {
-                g_crisis.phase.store((int)CrisisPhase::STABILIZE);
-                g_crisis.phaseStartMs.store(nowMs);
-                g_crisis.intensity.store(0.50);
-                broadcastServerMsg("*** MARKETS: Central bank announces emergency "
-                    "liquidity measures. Selling pressure easing. ***");
-                transitioned = true;
-            }
-            else if (cPhase == CrisisPhase::STABILIZE && elapsed > CRISIS_STABILIZE_MS) {
-                g_crisis.phase.store((int)CrisisPhase::RECOVERY);
-                g_crisis.phaseStartMs.store(nowMs);
-                g_crisis.intensity.store(0.25);
-                broadcastServerMsg("*** MARKETS: Ceasefire negotiations reported. "
-                    "Bargain hunters entering market. ***");
-                transitioned = true;
-            }
-            else if (cPhase == CrisisPhase::RECOVERY && elapsed > CRISIS_RECOVERY_MS) {
-                g_crisis.phase.store((int)CrisisPhase::NONE);
-                g_crisis.intensity.store(0.0);
-                broadcastServerMsg("*** MARKETS: Situation stabilizing. "
-                    "Normal trading conditions resuming. ***");
-                transitioned = true;
-            }
-
-            // Smooth intensity decay within phase
-            if (!transitioned) {
-                cPhase = (CrisisPhase)g_crisis.phase.load();
-                double base, target; int64_t dur;
-                switch (cPhase) {
-                case CrisisPhase::SHOCK:     base = 1.0;  target = 0.85; dur = CRISIS_SHOCK_MS;     break;
-                case CrisisPhase::PANIC:     base = 0.85; target = 0.50; dur = CRISIS_PANIC_MS;     break;
-                case CrisisPhase::STABILIZE: base = 0.50; target = 0.25; dur = CRISIS_STABILIZE_MS; break;
-                case CrisisPhase::RECOVERY:  base = 0.25; target = 0.0;  dur = CRISIS_RECOVERY_MS;  break;
-                default: base = 0; target = 0; dur = 1; break;
-                }
-                elapsed = nowMs - g_crisis.phaseStartMs.load();
-                double t = (std::min)(1.0, (double)elapsed / (double)dur);
-                g_crisis.intensity.store(base + (target - base) * t);
-            }
-
-            cPhase = (CrisisPhase)g_crisis.phase.load();
-            crisisIntensity = g_crisis.intensity.load();
         }
 
-        // Sleep with jitter (faster during crisis)
-        int sleepMs = (int)(SIM_INTERVAL_MS + jitterDist(rng));
-        if (cPhase != CrisisPhase::NONE) {
-            double speedMul = 1.0 + crisisIntensity * 4.0;  // up to 5x faster
-            sleepMs = (int)(sleepMs / speedMul);
-        }
-        if (sleepMs < 30) sleepMs = 30;
-        std::this_thread::sleep_for(std::chrono::milliseconds(sleepMs));
-        if (!Global::running.load()) break;
-
-        ++tick;
-
-        // Pick random symbol and bot
-        int si = symDist(rng);
-        std::string sym = Global::SYMBOLS[si];
-        int botNum = botDist(rng);
-        std::string botName = "BOT_" + std::to_string(botNum);
-        auto& ss = symState[sym];
-
-        // Bot personality: BOT_1-20 are bulls (+0.12 bias), BOT_21-40 are bears (-0.12 bias)
-        bool isBull = (botNum <= 20);
-        double personalityBias = isBull ? 0.12 : -0.12;
-
-        // ── Random walk sentiment (Brownian motion, not sine waves) ──
-        // Step: random normal increment
-        std::normal_distribution<double> normalDist(0.0, 0.4);
-        ss.sentiment += normalDist(rng);
-
-        // Mean-reversion: gently pull sentiment back toward 0
-        ss.sentiment *= 0.98;
-
-        // Regime change: 2% chance to suddenly reverse direction
-        if (coin(rng) < 0.02) {
-            ss.sentiment = -ss.sentiment * 0.6 + normalDist(rng) * 2.0;
-        }
-
-        // Clamp
-        if (ss.sentiment > 3.0) ss.sentiment = 3.0;
-        if (ss.sentiment < -3.0) ss.sentiment = -3.0;
-
-        // ── Crisis sentiment override ──
-        if (cPhase != CrisisPhase::NONE) {
-            double vuln = CRISIS_VULNERABILITY.count(sym) ?
-                CRISIS_VULNERABILITY.at(sym) : 1.0;
-            switch (cPhase) {
-            case CrisisPhase::SHOCK:
-                ss.sentiment = -3.0 * vuln;  // flash crash
-                break;
-            case CrisisPhase::PANIC:
-                ss.sentiment -= 1.5 * crisisIntensity * vuln;
-                break;
-            case CrisisPhase::STABILIZE:
-                ss.sentiment -= 0.5 * crisisIntensity * vuln;
-                if (coin(rng) < 0.08) {  // aftershock
-                    ss.sentiment -= 2.0 * vuln;
-                    if (coin(rng) < 0.3)
-                        broadcastServerMsg("*** AFTERSHOCK: " + sym +
-                            " hit by renewed selling pressure ***");
-                }
-                break;
-            case CrisisPhase::RECOVERY:
-                ss.sentiment += 1.2 * crisisIntensity;
-                if (coin(rng) < 0.02) ss.sentiment -= 0.8 * vuln;
-                break;
-            default: break;
-            }
-            double maxS = 3.0 + crisisIntensity * 2.0;
-            if (ss.sentiment > maxS) ss.sentiment = maxS;
-            if (ss.sentiment < -maxS) ss.sentiment = -maxS;
-        }
-
-        // ── Volatility random walk ──
-        std::normal_distribution<double> volStep(0.0, 0.08);
-        ss.volatility += volStep(rng);
-        if (coin(rng) < 0.03) ss.volatility *= 1.8;  // occasional volatility spike
-        if (ss.volatility < 0.5) ss.volatility = 0.5;
-        if (ss.volatility > 2.5) ss.volatility = 2.5;
-
-        // ── Crisis volatility override ──
-        if (cPhase != CrisisPhase::NONE) {
-            double vuln = CRISIS_VULNERABILITY.count(sym) ?
-                CRISIS_VULNERABILITY.at(sym) : 1.0;
-            double crisisVol = 1.5 + crisisIntensity * 2.5 * vuln;
-            if (ss.volatility < crisisVol) ss.volatility = crisisVol;
-            double maxVol = 2.5 + crisisIntensity * 3.0;
-            if (ss.volatility > maxVol) ss.volatility = maxVol;
-        }
-
-        // ── Burst trading (creates tall candles) ──
-        if (ss.burstRemain <= 0) {
-            double burstProb = 0.10;
-            if (cPhase != CrisisPhase::NONE)
-                burstProb = 0.10 + crisisIntensity * 0.50;  // up to 60% during shock
-
-            if (coin(rng) < burstProb) {
-                std::uniform_int_distribution<int> burstLen(3, 8);
-                int len = burstLen(rng);
-                if (cPhase == CrisisPhase::SHOCK || cPhase == CrisisPhase::PANIC)
-                    len = (int)(len * (1.0 + crisisIntensity));  // longer bursts
-
-                ss.burstRemain = len;
-
-                if (cPhase == CrisisPhase::SHOCK) {
-                    ss.burstBuy = false;  // all sells during shock
-                }
-                else if (cPhase == CrisisPhase::PANIC) {
-                    ss.burstBuy = (coin(rng) < 0.15);  // 85% sell bursts
-                }
-                else {
-                    double burstBias = ss.sentiment + personalityBias;
-                    ss.burstBuy = (burstBias > 0) ? (coin(rng) < 0.70) : (coin(rng) < 0.30);
-                }
-            }
-        }
-
-        bool isBuy;
-        if (ss.burstRemain > 0) {
-            isBuy = ss.burstBuy ? (coin(rng) < 0.80) : (coin(rng) < 0.20);
-            ss.burstRemain--;
-        }
-        else {
-            double buyProb = 0.5 + ss.sentiment * 0.12 + personalityBias;
-
-            // Crisis shifts all bots bearish
-            if (cPhase != CrisisPhase::NONE) {
-                buyProb -= crisisIntensity * 0.35;
-                if (cPhase == CrisisPhase::RECOVERY) buyProb += 0.15;  // bargain hunters
-            }
-
-            // Contrarian trades (wicks / dead-cat bounces)
-            double contrarianChance = 0.08;
-            if (cPhase == CrisisPhase::STABILIZE) contrarianChance = 0.15;
-            if (cPhase == CrisisPhase::RECOVERY)  contrarianChance = 0.12;
-            if (coin(rng) < contrarianChance) buyProb = 1.0 - buyProb;
-
-            if (buyProb < 0.05) buyProb = 0.05;
-            if (buyProb > 0.90) buyProb = 0.90;
-            isBuy = coin(rng) < buyProb;
-        }
-
-        // Order size — larger during crisis (institutional liquidations)
-        uint32_t qty = qtyDist(rng);
-        if (cPhase != CrisisPhase::NONE) {
-            double sizeMul = 1.0 + crisisIntensity * 2.0;  // up to 3x
-            qty = (uint32_t)(qty * sizeMul);
-            if (qty > 600) qty = 600;
-        }
-
-        // Lock and place the order
-        std::lock_guard<std::mutex> lk(Global::exMtx);
-
-        if (!Global::accounts.count(botName)) continue;
-        Account& bot = Global::accounts[botName];
-        OrderBook& book = Global::books[sym];
-
-        double price = 0.0;
-
-        // Bots trade at best available price (like real market orders)
-        // MM multi-level depth provides price variation naturally
-        if (isBuy) {
-            if (book.asks.empty()) continue;
-            price = book.asks.begin()->first;  // buy at best ask
-            double cost = price * qty;
-            if (bot.cash < cost) continue;
-            bot.cash -= cost;
-        }
-        else {
-            if (book.bids.empty()) continue;
-            price = book.bids.begin()->first;  // sell at best bid
-            if (bot.holdings[sym] < qty) continue;
-            bot.holdings[sym] -= qty;
-        }
-
-        // Create order
-        uint64_t oid = Global::nextOrderId.fetch_add(1);
-        Order ord;
-        ord.orderId = oid;
-        ord.username = botName;
-        ord.side = isBuy ? 'B' : 'S';
-        ord.symbol = sym;
-        ord.qty = qty;
-        ord.origQty = qty;
-        ord.price = price;
-        ord.ts = std::chrono::steady_clock::now();
-
-        bot.openOrders[oid] = ord;
-
-        // Match — this calls recordTrade() → enqueueBroadcast()
-        matchOrders(ord, book);
-        // Re-quote MM after matching (deferred to avoid iterator invalidation)
-        requoteMarketMaker(sym);
-        checkConditionalOrders(sym);
-
-        // Refund any unfilled remainder
-        if (ord.qty > 0) {
-            if (isBuy) {
-                bot.cash += ord.price * ord.qty;
-            }
-            else {
-                bot.holdings[sym] += ord.qty;
-            }
-            // Remove resting remainder (bots don't leave resting orders)
-            if (Global::liveOrders.count(oid)) {
-                if (ord.side == 'B') {
-                    book.bids[ord.price].erase(oid);
-                    if (book.bids[ord.price].empty()) book.bids.erase(ord.price);
-                }
-                else {
-                    book.asks[ord.price].erase(oid);
-                    if (book.asks[ord.price].empty()) book.asks.erase(ord.price);
-                }
-                Global::liveOrders.erase(oid);
-            }
-            bot.openOrders.erase(oid);
-        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
     }
 
-    std::cout << "[SIM] Simulation thread stopped.\n";
 }
 
 /*--------------------------------------------------------------------------
@@ -1155,7 +663,7 @@ static void clientSession(SOCKET sock) {
             // Reject re-login without logout
             if (!username.empty()) { sendServerMsg(sock, "Already logged in as '" + username + "'."); break; }
             // Block login as the house/market-maker account
-            if (user == HOUSE_USER) { std::vector<char> p; pushStr1(p, "Reserved system account."); sendFrame(sock, CMD_LOGIN_FAIL, p); break; }
+            if (user == Global::HOUSE_USER) { std::vector<char> p; pushStr1(p, "Reserved system account."); sendFrame(sock, CMD_LOGIN_FAIL, p); break; }
             {
                 std::lock_guard<std::mutex> lk(Global::exMtx);
                 std::string ph = hashPassword(user, pass);
@@ -1241,7 +749,8 @@ static void clientSession(SOCKET sock) {
             }
             matchOrders(ord, Global::books[sym]);
             // Re-quote MM after matching (deferred to avoid iterator invalidation)
-            requoteMarketMaker(sym);
+        /***************************************************************put market maker logic here****************************************************************/
+
             checkConditionalOrders(sym);
             // Resources stay reserved while order rests in the book.
             // The cancel handler refunds on cancellation; recordTrade handles fills.
@@ -1366,6 +875,7 @@ static void clientSession(SOCKET sock) {
             auto now = std::chrono::steady_clock::now();
             int64_t nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                 now.time_since_epoch()).count();
+            CrisisManager::setState(CrisisManager::PANIC);
             g_crisis.phase.store((int)CrisisPhase::SHOCK);
             g_crisis.startMs.store(nowMs);
             g_crisis.phaseStartMs.store(nowMs);
@@ -1520,7 +1030,7 @@ static void persistThread() {
  * main()
  *--------------------------------------------------------------------------*/
 
-int main() {
+int old_main() {
     // --- Step 1: Configuration ---
     std::string tcpPortStr, udpPortStr, persistPath;
     std::cout << "Server TCP Port Number: "; std::getline(std::cin, tcpPortStr);
@@ -1568,8 +1078,16 @@ int main() {
     loadPersistentData();
 
     // --- Step 6b: Seed house/market-maker account with initial quotes ---
-    seedMarketMaker();
-    seedBotAccounts();
+    //seedMarketMaker();
+    //seedBotAccounts();
+    
+    CrisisManager::Init();
+
+    BotManager::Instance().InitMarketMaker();
+
+    BotManager::Instance().InitBots();
+
+
 
     // --- Step 7: Start background threads ---
     std::thread bcastThr(udpBroadcastThread);
@@ -1597,4 +1115,34 @@ int main() {
     closesocket(Global::udpSocket);
     WSACleanup();
     return 0;
+}
+
+
+int main() {
+
+    // Initialize IMGUI
+
+    // Read from a config file
+    // Read from persistent data file
+
+    // Initialize managers from config + persistent data
+
+    // Can probably start simulation already in a thread
+    
+    // If config file does not have port, prompt user for a port
+
+    // Threads to run:
+    // 1 thread for each client, can be handled by a form of ClientThreadManager
+    // 1 thread for bot simulation
+    // 1 thread for crisis simulation
+    // 1 thread to handle the buy + sell order logic
+    // 1 thread to store persistent data, in case of server crash etc.
+    // Main thread renders ImGUI, and can accept user input to trigger market events.
+
+    // Cleanup:
+    // Disconnect clients
+    // Write stuff back into config and persistent
+    // Close all threads
+
+    return old_main();
 }

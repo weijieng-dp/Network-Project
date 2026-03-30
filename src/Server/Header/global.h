@@ -15,6 +15,7 @@ class Global {
 public:
 
 	static std::vector<std::string> SYMBOLS;
+	static std::map<std::string, double> REFERENCE_PRICES;
 
 	/*--------------------------------------------------------------------------
 	 * Global exchange state  (protected by exMtx)
@@ -62,4 +63,9 @@ public:
 	static std::vector<ConditionalOrder> conditionalOrders;
 	static std::atomic<uint64_t> nextCondId;
 
+	/*--------------------------------------------------------------------------
+	 * House / Market-Maker account
+	 *--------------------------------------------------------------------------*/
+
+	static std::string HOUSE_USER;
 };
