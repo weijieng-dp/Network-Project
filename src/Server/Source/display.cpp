@@ -1,6 +1,7 @@
 #include "display.h"
 #include "global.h"
 #include "crisis.h"
+#include "candleplot.h"
 #include <iostream>
 
 GLFWwindow* Display::window;
@@ -283,8 +284,64 @@ void Display::Draw() {
     }
     ImGui::End();
 
+    static double time{ 5. };
+    static double prevTime = glfwGetTime();
     if (ImGui::Begin("Active Symbols:")){
-        
+        static ImVec4 bullCol = ImVec4(0.000f, 1.000f, 0.441f, 1.000f);
+        static ImVec4 bearCol = ImVec4(0.853f, 0.050f, 0.310f, 1.000f);
+
+        time += glfwGetTime() - prevTime;
+        prevTime = glfwGetTime();
+
+        // Update the chart once every 5s
+        if (time >= 5.) {
+            time = 0;
+
+            std::unordered_map<std::string, std::vector<TradePoint>> tradeLog;
+
+            // Making a copy of the trade logs to not "hog" the mutex.
+            {
+                std::lock_guard lock{ Global::exMtx };
+                for (const auto& Orderbooks : Global::books) {
+                    tradeLog[Orderbooks.first] = Orderbooks.second.tradeLog;
+                }
+            }
+
+            // Drawing out each plot
+            for (const auto& log : tradeLog) {
+                // Gathering the data first...
+                std::vector<double> dates;  dates.reserve(log.second.size());
+                std::vector<double> opens;  opens.reserve(log.second.size());
+                std::vector<double> highs;  highs.reserve(log.second.size());
+                std::vector<double> lows;   lows.reserve(log.second.size());
+                std::vector<double> closes; closes.reserve(log.second.size());
+                bool tooltip{ true };
+
+                for (const TradePoint& tp : log.second) {
+                    double l_open = closes.empty() ? tp.price : closes.back();
+                    double l_high = std::max(l_open, tp.price);
+                    double l_low = std::min(l_open, tp.price);
+
+                    opens.push_back(l_open);
+                    highs.push_back(l_high);
+                    lows.push_back(l_low);
+                    closes.push_back(tp.price);
+                    
+
+                    // Datetime format = 2026-03-31_01:51:11
+                }
+
+                if (ImPlot::BeginPlot(log.first.c_str())) {
+
+                    ImPlot::SetupAxes(nullptr, nullptr, 0, ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_RangeFit);
+                    ImPlot::SetupAxisScale(ImAxis_X1, ImPlotScale_Time);
+                    ImPlot::SetupAxisFormat(ImAxis_Y1, "$%.0f");
+
+                    ImPlot::EndPlot();
+                }
+            }
+
+        }
     }
     ImGui::End();
 

@@ -98,7 +98,6 @@ prior written consent of DigiPen Institute of Technology is prohibited.
 #include "types.h"
 #include "global.h"
 
-#include "house.h"
 #include "persistence.h"
 #include "Bots.h"
 #include "crisis.h"
@@ -514,6 +513,7 @@ static std::vector<OHLCCandle> buildCandles(const std::vector<TradePoint>& log) 
         std::string key;
         std::string label;
         size_t upos = tp.datetime.find('_');
+
         if (upos != std::string::npos && upos + 8 <= tp.datetime.size()) {
             std::string timeStr = tp.datetime.substr(upos + 1, 8); // "HH:MM:SS"
             // Round seconds to 15-second bucket: 0-14→00, 15-29→15, 30-44→30, 45-59→45
@@ -527,11 +527,12 @@ static std::vector<OHLCCandle> buildCandles(const std::vector<TradePoint>& log) 
             key = tp.datetime;
             label = tp.datetime;
         }
+
         if (key != curKey) {
             // New candle's open = previous candle's close (price continuity)
             double openPx = buckets.empty() ? tp.price : buckets.back().close;
-            double hi = (std::max)(openPx, tp.price);
-            double lo = (std::min)(openPx, tp.price);
+            double hi = std::max(openPx, tp.price);
+            double lo = std::min(openPx, tp.price);
             buckets.push_back({ openPx, hi, lo, tp.price, tp.qty, label });
             curKey = key;
         }
