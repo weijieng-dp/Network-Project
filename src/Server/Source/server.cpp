@@ -678,6 +678,11 @@ static void clientSession(SOCKET sock) {
             break;
         }
         case CMD_LOGIN: {
+            if (!username.empty()) {    // Reject login without logout
+                sendServerMsg(sock, "Already logged in as [" + username + "]. Please logout first.");
+                break;
+            }
+
             std::string user, pass;
             // This reads: [UsernameLen:1] [Username:var]
             if (!readStr1(payload.data(), (int)payLen, o, user) || user.empty()) {
@@ -691,6 +696,17 @@ static void clientSession(SOCKET sock) {
                 std::lock_guard<std::mutex> plk(Global::printMtx);
                 std::cout << "[LOGIN] Received username: '" << user
                     << "' (len=" << user.length() << ")\n";
+            }
+
+            // Check if Already logged in
+            {
+                std::lock_guard<std::mutex> lk(Global::userSockMtx);
+                if (Global::userSockets.count(user)) {
+                    std::vector<char> p;
+                    pushStr1(p, "User already logged in from another session.");
+                    sendFrame(sock, CMD_LOGIN_FAIL, p);
+                    break;
+                }
             }
 
             // ===== READ FLAG =====
@@ -791,9 +807,6 @@ static void clientSession(SOCKET sock) {
                     << (encFlag == 1 ? "encrypted" : "plaintext")
                     << " password (len=" << pass.length() << ")\n";
             }
-
-            // Reject re-login without logout
-            if (!username.empty()) { sendServerMsg(sock, "Already logged in as '" + username + "'."); break; }
             // Block login as the house/market-maker account
             if (user == Global::HOUSE_USER) { std::vector<char> p; pushStr1(p, "Reserved system account."); sendFrame(sock, CMD_LOGIN_FAIL, p); break; }
             {

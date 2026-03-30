@@ -558,8 +558,20 @@ static bool performDHHandshake() {
 }
 
 static void cmdLogin(const std::string& user, const std::string& pass) {
-    if(user.empty()||pass.empty()){logMsg("Usage: /login <username> <password>"); return;}
-    {std::lock_guard<std::mutex> lk(g_stateMtx); g_username=user;}
+    if (g_loggedIn) {   // if client is already logged, don't process login command till logout
+        logMsg("Already logged in as [" + g_username + "]. Logout with /logout first.");
+        return;
+    }
+
+    if(user.empty() || pass.empty()) {  // Invalid arguments provided
+        logMsg("Usage: /login <username> <password>"); 
+        return;
+    }
+
+    {   // Update username
+        std::lock_guard<std::mutex> lk(g_stateMtx); 
+        g_username = user;
+    }
 
     // Perform DH handshake if not already done
     if (!g_dhEstablished.load()) {
