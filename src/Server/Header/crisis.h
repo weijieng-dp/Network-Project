@@ -26,7 +26,7 @@ class CrisisManager {
 
 public:
 	enum Crisis : uint8_t {
-		NONE, SHOCK, PANIC, CRAZE, RANDOM
+		NONE, SHOCK, PANIC, CRAZE, RANDOM, Recovery
 	};
 
 	static Crisis getState() { return static_cast<Crisis>(currState.load()); }

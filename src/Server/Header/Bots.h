@@ -4,7 +4,7 @@
 
 
 
-constexpr int TotalBots = 30;
+constexpr int TotalBots = 50;
 
 enum Strategy
 {
@@ -58,7 +58,9 @@ public:
     void NoiseTradingStrategy(Bot& bot, std::function<void(Order&, OrderBook&)> matchingfunction);
     void HerdBehaviorStrategy(Bot& bot,
         std::function<void(Order&, OrderBook&)> matchingfunction);
-    void PanicSellingStrategy();
+    void PanicSellingStrategy(
+        Bot& bot,
+        std::function<void(Order&, OrderBook&)> matchingfunction);
     void CancelOrder(Bot& bot);
     void PlaceOrder(Bot& bot,Order ord, char side);
     
@@ -68,6 +70,7 @@ public:
     static std::array<Bot, TotalBots> bots; // momentum, mean-reversion
     static std::array<Bot, 5> MarketMakers; // momentum, mean-reversion
     static std::array<Bot, 5> NoiseTraders; // momentum, mean-reversion
+    static std::array<Bot, 5> PanicSellers; // momentum, mean-reversion
 
 private:
 };

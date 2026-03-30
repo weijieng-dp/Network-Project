@@ -524,9 +524,9 @@ static void simulationThread() {
 
             BotManager::Instance().ProcessMarketMaker(matchOrders);
             BotManager::Instance().ProcessStrategies(matchOrders);
+            CrisisManager::Update();
 
         }
-        CrisisManager::Update();
 
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
     }
@@ -875,6 +875,7 @@ static void clientSession(SOCKET sock) {
             auto now = std::chrono::steady_clock::now();
             int64_t nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                 now.time_since_epoch()).count();
+            CrisisManager::setState(CrisisManager::PANIC);
             g_crisis.phase.store((int)CrisisPhase::SHOCK);
             g_crisis.startMs.store(nowMs);
             g_crisis.phaseStartMs.store(nowMs);
