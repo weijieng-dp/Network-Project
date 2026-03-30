@@ -120,6 +120,7 @@ prior written consent of DigiPen Institute of Technology is prohibited.
 #include "house.h"
 #include "persistence.h"
 #include "Bots.h"
+#include "crisis.h"
 
 static const int    MAX_PAYLOAD = 8192;         // max TCP payload bytes
 static const double PERSIST_INTERVAL = 5.0;     // seconds between disk flushes
@@ -394,8 +395,7 @@ static void checkConditionalOrders(const std::string& sym) {
 
         matchOrders(sord, book);
         /***************************************************************put market maker logic here****************************************************************/
-        BotManager::Instance().ProcessMarketMaker(matchOrders);   // ← add
-        BotManager::Instance().ProcessStrategies(matchOrders);    // ← add
+ 
 
         if (sord.qty > 0) {
             acc.holdings[sym] += sord.qty;
@@ -524,7 +524,9 @@ static void simulationThread() {
 
             BotManager::Instance().ProcessMarketMaker(matchOrders);
             BotManager::Instance().ProcessStrategies(matchOrders);
+
         }
+        CrisisManager::Update();
 
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
     }
@@ -748,8 +750,7 @@ static void clientSession(SOCKET sock) {
             matchOrders(ord, Global::books[sym]);
             // Re-quote MM after matching (deferred to avoid iterator invalidation)
         /***************************************************************put market maker logic here****************************************************************/
-            BotManager::Instance().ProcessMarketMaker(matchOrders);   // ← add
-            BotManager::Instance().ProcessStrategies(matchOrders);    // ← add
+
             checkConditionalOrders(sym);
             // Resources stay reserved while order rests in the book.
             // The cancel handler refunds on cancellation; recordTrade handles fills.
@@ -1079,6 +1080,7 @@ int old_main() {
     //seedMarketMaker();
     //seedBotAccounts();
     
+    CrisisManager::Init();
 
     BotManager::Instance().InitMarketMaker();
 
