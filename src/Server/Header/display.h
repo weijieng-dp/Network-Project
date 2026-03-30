@@ -17,9 +17,16 @@
 class Display {
 public:
 	struct fatStruct;
-	static GLFWwindow* window;
+
+	static GLFWwindow*	window;
+
+	static int			width;
+	static int			height;
+
+
 public:
 	static void Init();
+	static void InitPorts();
 	static void Draw();
 	static void Free();
 };

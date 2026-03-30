@@ -3,12 +3,15 @@
 #include <iostream>
 
 GLFWwindow* Display::window;
+int         Display::width;
+int         Display::height;
 
 void Display::Init() {
     
     std::string serverName{ "Server" };
-    int width{ 1600 };
-    int height{ 900 };
+
+    width = 1600;
+    height = 900;
 
     // Initialize OpenGL
     glfwInit();
@@ -46,7 +49,7 @@ void Display::Init() {
     ImGui_ImplOpenGL3_Init();
 
     ImGuiIO& io = ImGui::GetIO();
-    io.DisplaySize = ImVec2(1600.f, 900.f);
+    io.DisplaySize = ImVec2(width, height);
 
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;         // Enable Docking
@@ -55,14 +58,14 @@ void Display::Init() {
     ImVec4* colors = style.Colors;
 
     // Base Colors
-    ImVec4 bgColor = ImVec4(0.10f, 0.105f, 0.11f, 1.00f);
-    ImVec4 lightBgColor = ImVec4(0.15f, 0.16f, 0.17f, 1.00f);
-    ImVec4 panelColor = ImVec4(0.17f, 0.18f, 0.19f, 1.00f);
-    ImVec4 panelHoverColor = ImVec4(0.25f, 0.35f, 0.45f, 1.00f);
-    ImVec4 panelActiveColor = ImVec4(0.20f, 0.30f, 0.40f, 1.00f);
-    ImVec4 textColor = ImVec4(0.86f, 0.87f, 0.88f, 1.00f);
-    ImVec4 textDisabledColor = ImVec4(0.50f, 0.50f, 0.50f, 1.00f);
-    ImVec4 borderColor = ImVec4(0.14f, 0.16f, 0.18f, 1.00f);
+    ImVec4 bgColor =            ImVec4(0.10f, 0.105f, 0.11f, 1.00f);
+    ImVec4 lightBgColor =       ImVec4(0.15f, 0.16f, 0.17f, 1.00f);
+    ImVec4 panelColor =         ImVec4(0.17f, 0.18f, 0.19f, 1.00f);
+    ImVec4 panelHoverColor =    ImVec4(0.25f, 0.35f, 0.45f, 1.00f);
+    ImVec4 panelActiveColor =   ImVec4(0.20f, 0.30f, 0.40f, 1.00f);
+    ImVec4 textColor =          ImVec4(0.86f, 0.87f, 0.88f, 1.00f);
+    ImVec4 textDisabledColor =  ImVec4(0.50f, 0.50f, 0.50f, 1.00f);
+    ImVec4 borderColor =        ImVec4(0.14f, 0.16f, 0.18f, 1.00f);
 
     // Text
     colors[ImGuiCol_Text] = textColor;
@@ -157,12 +160,86 @@ void Display::Init() {
     style.TabRounding = 2.0f;
 
     // Reduced Padding and Spacing
-    style.WindowPadding = ImVec2(5.0f, 5.0f);
-    style.FramePadding = ImVec2(4.0f, 3.0f);
-    style.ItemSpacing = ImVec2(6.0f, 4.0f);
-    style.ItemInnerSpacing = ImVec2(4.0f, 4.0f);
+    style.WindowPadding =       ImVec2(5.0f, 5.0f);
+    style.FramePadding =        ImVec2(4.0f, 3.0f);
+    style.ItemSpacing =         ImVec2(6.0f, 4.0f);
+    style.ItemInnerSpacing =    ImVec2(4.0f, 4.0f);
 
-    
+}
+
+void Display::InitPorts() {
+
+    // Initialize port values. Is a "blocking" call
+
+    while ((Global::udpPort == 0 || Global::tcpPort == 0) && Global::running.load()) {
+        // Starting the frame
+        {
+            glViewport(0, 0, 1600, 900);
+            glClearDepthf(0.f);
+            glClearColor(0.f, 0.f, 0.f, 0.f);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+            if (glfwWindowShouldClose(window)) Global::running.exchange(false);
+
+            ImGui_ImplGlfw_NewFrame();
+            ImGui_ImplOpenGL3_NewFrame();
+        }
+
+        ImGui::NewFrame();
+
+        bool open{ true };
+        ImGui::SetNextWindowSize({ 400.f,200.f }, ImGuiCond_Once);
+        ImGui::SetNextWindowPos({ width / 2 - 200.f,height / 2 - 100.f }, ImGuiCond_Once);
+        if (ImGui::Begin("Enter UDP and TCP port numbers:", &open, ImGuiWindowFlags_NoCollapse)) {
+
+            int udpPort{ 0 };
+            int tcpPort{ 0 };
+
+            ImGui::Text("TCP Port: ");
+            ImGui::SameLine();
+
+            ImGui::PushID(0);
+            ImGui::InputInt("", &tcpPort);
+            ImGui::PopID();
+
+            ImGui::Text("UDP Port: ");
+            ImGui::SameLine();
+
+            ImGui::PushID(1);
+            ImGui::InputInt("", &udpPort);
+            ImGui::PopID();
+
+            ImGui::NewLine();
+            ImGui::NewLine();
+
+            if (ImGui::Button("   Confirm   ")) {
+                
+                if (!(tcpPort == 0 || udpPort == 0)) {
+                    Global::udpPort = static_cast<uint32_t>(udpPort);
+                    Global::tcpPort = static_cast<uint32_t>(tcpPort);
+                }
+            }
+
+            if (tcpPort == 0) {
+                ImGui::Text("Please key in a value for TCP");
+            }
+            if (udpPort == 0) {
+                ImGui::Text("Please key in a value for UDP");
+            }
+        }
+
+        ImGui::End();
+
+
+        // RENDERING THE FRAME
+        {
+            ImGui::Render();
+            ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+
+            glfwSwapBuffers(window);
+            glfwPollEvents();
+        }
+    }
 }
 
 void Display::Draw() {

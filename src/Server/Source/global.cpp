@@ -6,6 +6,9 @@ std::map<std::string, double> Global::REFERENCE_PRICES{
    {"TSLA", 250.00}, {"AMZN", 185.00}
 };
 
+uint16_t									Global::udpPort;
+uint16_t									Global::tcpPort;
+
 std::mutex									Global::exMtx;   
 
 std::unordered_map<std::string, Account>	Global::accounts;

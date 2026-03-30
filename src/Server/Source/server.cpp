@@ -1290,6 +1290,7 @@ int main() {
 
     // Initialize IMGUI
     Display::Init();
+    Display::InitPorts();
 
     // Read from a config file
     // Read from persistent data file
