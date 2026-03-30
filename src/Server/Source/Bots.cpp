@@ -8,6 +8,7 @@
 #include "global.h"
 #include "utils.h"
 #include "types.h"
+
 #include <random>
 
 std::array<Bot, TotalBots> BotManager::bots{}; // momentum, mean-reversion
@@ -18,7 +19,7 @@ static std::mt19937 rng(std::random_device{}());
 
 void Bot::InitBot( std::string botName,Strategy strategy)
 {
-	std::uniform_int_distribution<int> dist(1, 3/*StrategyCount - 1*/);
+	std::uniform_int_distribution<int> dist(1, StrategyCount - 3);
 	std::uniform_real_distribution<float> reaction(0.2f, 1.2f);
 	std::uniform_int_distribution<int> hold(50, 200);
 	std::uniform_int_distribution<int> sym(0, Global::SYMBOLS.size() - 1);
@@ -308,6 +309,7 @@ void BotManager::MomentumStrategy(Bot& bot,
 	Global::liveOrders[ord.orderId] = ord;
 	house.openOrders[ord.orderId] = ord;
 
+#ifdef _DEBUG
 	std::cout << "[MOM] " << bot.botname
 		<< " sym=" << bot.Symbol
 		<< " side=" << ord.side
@@ -316,7 +318,7 @@ void BotManager::MomentumStrategy(Bot& bot,
 		<< " signal=" << signal
 		<< " fastMA=" << fastMA
 		<< " slowMA=" << slowMA << "\n";
-
+#endif
 	matchingfunction(ord, book);
 
 	// Refund any unmatched remainder
@@ -403,13 +405,13 @@ void BotManager::TrendFollowingStrategy(Bot& bot,
 
 	Global::liveOrders[ord.orderId] = ord;
 	house.openOrders[ord.orderId] = ord;
-
+#ifdef _DEBUG
 	std::cout << "[TREND] " << bot.botname
 		<< " sym=" << bot.Symbol
 		<< " side=" << ord.side
 		<< " price=" << ord.price
 		<< " signal=" << signal << "\n";
-
+#endif
 	matchingfunction(ord, book);
 
 	if (ord.qty > 0)
@@ -486,14 +488,14 @@ else if (z_score < -1.5 && !book.asks.empty())
 
 	Global::liveOrders[ord.orderId] = ord;
 	house.openOrders[ord.orderId] = ord;
-
+#ifdef _DEBUG
 	std::cout << "[MR] " << bot.botname
 		<< " sym=" << bot.Symbol
 		<< " side=" << ord.side
 		<< " price=" << std::fixed << std::setprecision(4) << ord.price
 		<< " qty=" << ord.qty
 		<< " deviation=" << deviation << "\n";
-
+#endif
 	matchingfunction(ord, book);
 
 	// Update reference to MM midprice so bot tracks the walk
@@ -554,13 +556,13 @@ void BotManager::NoiseTradingStrategy(
 	house.openOrders[ord.orderId] = ord;
 
 	matchingfunction(ord, book);
-
+#ifdef _DEBUG
 	std::cout << "[NT] " << bot.botname
 		<< " sym=" << bot.Symbol
 		<< " side=" << ord.side
 		<< " price=" << std::fixed << std::setprecision(4) << ord.price
 		<< " qty=" << ord.qty;
-
+#endif
 	// Cancel any leftover unmatched qty and refund
 	if (ord.qty > 0)
 	{
@@ -653,11 +655,11 @@ void BotManager::HerdBehaviorStrategy(Bot& bot,
 
 	Global::liveOrders[ord.orderId] = ord;
 	house.openOrders[ord.orderId] = ord;
-
+#ifdef _DEBUG
 	std::cout << "[HERD] " << bot.botname
 		<< " sym=" << bot.Symbol
 		<< " signal=" << herdSignal << "\n";
-
+#endif
 	matchingfunction(ord, book);
 
 	if (ord.qty > 0)
@@ -778,22 +780,22 @@ void BotManager::ProcessMarketMaker(std::function<void(Order& ord, OrderBook& bo
 		std::array<Order, 2> orders = MarketMakerStrategy(MarketMakers[i], bid, ask);
 
 		PlaceOrder(MarketMakers[i], orders[0], 'B');
-
+#ifdef _DEBUG
 		std::cout << "[MM] " << MarketMakers[i].botname
 			<< " sym=" << orders[0].symbol  // will print empty string if bug is present
 			<< " bid=" << orders[0].price
 			<< " ask=" << orders[1].price << "\n";
-
+#endif
 
 		PlaceOrder(MarketMakers[i], orders[1], 'S');
-
+#ifdef _DEBUG
 		std::cout << "[MM] " << MarketMakers[i].botname
 			<< " sym=" << orders[0].symbol  // will print empty string if bug is present
 			<< " bid=" << orders[0].price
 			<< " ask=" << orders[1].price << "\n";
 		matchingfunction(orders[0], Global::books[MarketMakers[i].Symbol]);
 		matchingfunction(orders[1], Global::books[MarketMakers[i].Symbol]);
-
+#endif
 
 		NoiseTradingStrategy(NoiseTraders[i], matchingfunction);
 	}
