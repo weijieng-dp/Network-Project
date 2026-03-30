@@ -265,15 +265,18 @@ void Display::InitPorts() {
 
 void Display::Draw() {
 
-    glViewport(0, 0, 1600, 900);
-    glClearDepthf(0.f);
-    glClearColor(0.f, 0.f, 0.f, 0.f);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-    
-    if (glfwWindowShouldClose(window)) Global::running.exchange(false);
+    // Starting the frame
+    {
+        glViewport(0, 0, 1600, 900);
+        glClearDepthf(0.f);
+        glClearColor(0.f, 0.f, 0.f, 0.f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    ImGui_ImplGlfw_NewFrame();
-    ImGui_ImplOpenGL3_NewFrame();
+        if (glfwWindowShouldClose(window)) Global::running.exchange(false);
+
+        ImGui_ImplGlfw_NewFrame();
+        ImGui_ImplOpenGL3_NewFrame();
+    }
     
     ImGui::NewFrame();
 
@@ -435,11 +438,14 @@ void Display::Draw() {
     }
     ImGui::End();
 
-    ImGui::Render();
-    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+    // RENDERING THE FRAME
+    {
+        ImGui::Render();
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
-    glfwSwapBuffers(window);
-    glfwPollEvents();
+        glfwSwapBuffers(window);
+        glfwPollEvents();
+    }
     
 }
 
