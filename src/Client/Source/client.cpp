@@ -113,6 +113,9 @@ static bool                             g_loggedIn = false;
 static std::string                      g_username;
 static double                           g_cash     = 0.0;
 static std::map<std::string,uint32_t>   g_holdings;
+static std::map<std::string, double>    g_avgCost;      // Average cost per share
+static std::map<std::string, double>    g_unrealizedPL; // Unrealized P&L per share
+static std::map<std::string, double>    g_pnlPercent;   // P&L percentage per share
 
 // Local order / trade cache
 struct LocalOrder { 
@@ -166,6 +169,10 @@ static std::mutex g_dhMutex;
 
 // FTXUI screen reference for PostEvent from background threads
 static ftxui::ScreenInteractive* g_screenPtr = nullptr;
+
+// for refreshing account
+static std::chrono::steady_clock::time_point g_lastAccountRefresh;
+static const std::chrono::seconds g_accountRefreshInterval{ 5 };
 
 /*--------------------------------------------------------------------------
  * TUI helpers
@@ -292,10 +299,29 @@ static void parseMarketData(const char* b, int n, int o) {
 }
 
 static void onAccountData(const char* b, int n, int o) {
-    double cash=0; uint16_t nh=0;
+    double cash{}; uint16_t nh{};
     if(!readDouble(b,n,o,cash)||!readU16(b,n,o,nh)) return;
-    { std::lock_guard<std::mutex> lk(g_stateMtx); g_cash=cash; g_holdings.clear();
-      for(uint16_t i=0;i<nh;++i){ std::string sym; uint32_t qty; if(!readStr1(b,n,o,sym)||!readU32(b,n,o,qty))break; if(qty>0)g_holdings[sym]=qty; } }
+    { 
+        std::lock_guard<std::mutex> lk(g_stateMtx); 
+        g_cash = cash; g_holdings.clear(); g_avgCost.clear(); g_unrealizedPL.clear(); g_pnlPercent.clear();
+
+        for (uint16_t i{}; i < nh; ++i) { 
+            std::string sym; uint32_t qty;
+            double avgCost{}, currPrice{}, unrealized{}, pnlPct{};
+            if (!readStr1(b, n, o, sym) || !readU32(b, n, o, qty))break; 
+
+            if (readDouble(b, n, o, avgCost) && readDouble(b, n, o, currPrice) &&
+                readDouble(b, n, o, unrealized) && readDouble(b, n, o, pnlPct)) {
+                if (qty > 0) {
+                    g_holdings[sym] = qty;
+                    g_avgCost[sym] = avgCost;
+                    g_unrealizedPL[sym] = unrealized;
+                    g_pnlPercent[sym] = pnlPct;
+                }
+            }
+            else if (qty > 0) g_holdings[sym] = qty;
+        }
+    }
     refreshUI();
 }
 
@@ -431,10 +457,7 @@ static void tcpReceiveThread() {
             }
             double cash=0; readDouble(b,n,o,cash);
             totalValue += cash;
-            oss.imbue(std::locale("en_SG.UTF-8"));
-            oss << "Cash: " << std::showbase << std::put_money(cash * 100)
-                << " | Total Value: " << std::showbase << std::put_money(totalValue * 100);
-            //oss << "  Cash: $" << cash << "  |  Total Value: ";// << totalValue;
+            oss << "  Cash: $" << cash << "  |  Total Value: ";// << totalValue;
             logMsg(oss.str());
             break;
         }
@@ -1036,8 +1059,9 @@ static ftxui::Element buildMarketPanel() {
     rows.push_back(hbox({text(" MARKET DATA ") | bold | color(Color::Cyan)}));
     rows.push_back(separator());
     rows.push_back(hbox({
-        text(" SYM  ") | bold, text(" Bid      ") | bold,
-        text(" Ask      ") | bold, text(" Last     ") | bold, text(" Vol  ") | bold,
+        text(" SYM  ") | bold | size(WIDTH, EQUAL, 8), text(" Bid      ") | bold | size(WIDTH, EQUAL, 10),
+        text(" Ask      ") | bold | size(WIDTH, EQUAL, 10), text(" Last     ") | bold | size(WIDTH, EQUAL, 10), 
+        text(" Vol  ") | bold | size(WIDTH, EQUAL, 10),
     }));
 
     for(auto& sym : SYMBOLS) {
@@ -1050,11 +1074,11 @@ static ftxui::Element buildMarketPanel() {
             last<<std::fixed<<std::setprecision(2)<<m.last;
             bool isViewed = (sym == SYMBOLS[g_chartSymIdx]);
             auto row = hbox({
-                text(" " + sym + " ") | (isViewed ? color(Color::Yellow) : color(Color::White)),
-                text(" " + bid.str() + " ") | color(Color::Green),
-                text(" " + ask.str() + " ") | color(Color::Red),
-                text(" " + last.str() + " "),
-                text(" " + std::to_string(m.vol) + " ") | dim,
+                text(" " + sym + " ") | (isViewed ? color(Color::Yellow) : color(Color::White)) | size(WIDTH, EQUAL, 8),
+                text(" " + bid.str() + " ") | color(Color::Green) | size(WIDTH, EQUAL, 10) | align_right,
+                text(" " + ask.str() + " ") | color(Color::Red) | size(WIDTH, EQUAL, 10) | align_right,
+                text(" " + last.str() + " ") | size(WIDTH, EQUAL, 10) | align_right,
+                text(" " + std::to_string(m.vol) + " ") | dim | size(WIDTH, EQUAL, 10) | align_right,
             });
             rows.push_back(row);
         } else {
@@ -1083,9 +1107,71 @@ static ftxui::Element buildAccountPanel() {
         rows.push_back(separator());
         rows.push_back(hbox({text(" Cash: ") | bold, text(fmtMoney(g_cash)) | color(Color::Green)}));
         if(!g_holdings.empty()){
-            rows.push_back(text(" Holdings:") | bold);
-            for(auto&[sym,qty]:g_holdings)
-                rows.push_back(text("  " + sym + " x" + std::to_string(qty)));
+            rows.push_back(separator());
+            rows.push_back(text(" Holdings:") | bold | color(Color::Yellow));
+
+            rows.push_back(hbox({
+                text(" SYM   ") | bold | size(WIDTH, EQUAL, 8),
+                text(" QTY    ") | bold | size(WIDTH, EQUAL, 6),
+                text(" AVG      ") | bold | size(WIDTH, EQUAL, 10),
+                text(" CUR      ") | bold | size(WIDTH, EQUAL, 10),
+                text(" P&L       ") | bold | size(WIDTH, EQUAL, 10),
+                text(" %    ") | bold,
+                }
+            ));
+
+            auto fmtPercent = [](double v) -> std::string {
+                std::ostringstream ss;
+                ss << std::fixed << std::setprecision(2) << v;
+                return ss.str();
+            };
+
+            double totalUnrealizedPL{}, totalPortfolioVal{ g_cash };
+            {
+                std::lock_guard<std::mutex> mktlk(g_mktMtx);
+
+                for (auto& [sym, qty] : g_holdings) {
+                    if (qty == 0) continue;
+
+                    double avgCost{ g_avgCost.count(sym) ? g_avgCost[sym] : 0.0 },
+                        unrealizedPL{ g_unrealizedPL.count(sym) ? g_unrealizedPL[sym] : 0.0 },
+                        pnlPercent{ g_pnlPercent.count(sym) ? g_pnlPercent[sym] : 0.0 };
+
+                    double currPrice{};
+                    auto mktIt{ g_marketData.find(sym) };
+                    if (mktIt != g_marketData.end()) currPrice = mktIt->second.last;
+                    
+
+
+                    double positionVal{ currPrice * qty };
+                    totalPortfolioVal += positionVal;
+                    totalUnrealizedPL += unrealizedPL;
+
+                    Color pnlColor{ unrealizedPL >= 0.0 ? Color::Green : Color::Red },
+                        pnlPercentColor{ pnlPercent >= 0.0 ? Color::Green : Color::Red };
+
+                    std::string pnlPercentStr{ (pnlPercent >= 0.0 ? "+" : "") + fmtPercent(pnlPercent) + "%" };
+
+                    rows.push_back(hbox({
+                        text(" " + sym + " ") | size(WIDTH, EQUAL, 8) | color(Color::White),
+                        text(" " + std::to_string(qty) + " ") | size(WIDTH, EQUAL, 6) | color(Color::White) | align_right,
+                        text(" " + fmtMoney(avgCost) + " ") | size(WIDTH, EQUAL, 10) | color(Color::White) | align_right,
+                        text(" " + fmtMoney(currPrice) + " ") | size(WIDTH, EQUAL, 10) | color(Color::White) | align_right,
+                        text(" " + fmtMoney(unrealizedPL) + " ") | size(WIDTH, EQUAL, 10) | color(pnlColor) | align_right,
+                        text(" " + pnlPercentStr + " ") | color(pnlPercentColor),
+                        }));
+                }
+                    
+            }
+            rows.push_back(separator());
+            // Summary in a single row with two columns side by side
+            rows.push_back(hbox({
+                hbox({ text(" Portfolio Value: ") | bold,
+                       text(fmtMoney(totalPortfolioVal)) | color(Color::Green) }) | flex,
+                hbox({ text(" Unrealized P&L: ") | bold,
+                       text(fmtMoney(totalUnrealizedPL)) | color(totalUnrealizedPL >= 0.0 ? Color::Green : Color::Red) }) | flex,
+                })
+            );
         }
         if(!g_openOrders.empty()){
             rows.push_back(separator());
@@ -1205,8 +1291,17 @@ int main() {
             return false;
         });
 
+        auto timer = [&] {
+            auto now{ std::chrono::steady_clock::now() };
+            if (g_loggedIn && now - g_lastAccountRefresh >= g_accountRefreshInterval) {
+                sendFrame(g_tcpSocket, CMD_QUERY_ACCOUNT, {});
+                g_lastAccountRefresh = now;
+            }
+        };
+
         // Build the TUI layout
         auto innerRenderer = Renderer(inputComponent, [&] {
+            timer();
             return vbox({
                 // Top: Candlestick chart (takes most space)
                 buildCandlestickChart() | flex,

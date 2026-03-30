@@ -26,7 +26,14 @@ void writePersistentData() {
         std::string accountsPlain;
         for (auto& [u, acc] : Global::accounts) {
             accountsPlain += "A " + u + " " + std::to_string(acc.cash) + " " + acc.passwordHash + "\n";
-            for (auto& [sym, qty] : acc.holdings) if (qty > 0) accountsPlain += "H " + sym + " " + std::to_string(qty) + "\n";
+            for (auto& [sym, qty] : acc.holdings) {
+                if (qty == 0) continue;
+                double avgCost{ acc.avgCost.count(sym) ? acc.avgCost[sym] : 0.0 },
+                    totalCost{ acc.totalCost.count(sym) ? acc.totalCost[sym] : 0.0},
+                    realizedPL{ acc.realizedPL.count(sym) ? acc.realizedPL[sym] : 0.0 };
+                accountsPlain += "H " + sym + " " + std::to_string(qty) + " " + std::to_string(avgCost)
+                    + " " + std::to_string(totalCost) + " " + std::to_string(realizedPL) + "\n";
+            }
         }
         std::vector<uint8_t> encryptedAcc{ cipher.encrypt(std::vector<uint8_t>(accountsPlain.begin(), accountsPlain.end()), accountsAad) };
         std::ofstream fa(Global::persistPath + "\\accounts.dat", std::ios::binary | std::ios::trunc);
@@ -118,10 +125,14 @@ void loadPersistentData() {
             else if (tag == 'H' && !curUser.empty()) { 
                 std::string sym; 
                 uint32_t qty; 
+                double avgCost{}, totalCost{}, realizedPL{};
                 
-                ls >> sym >> qty; 
-                
+                ls >> sym >> qty >> avgCost >> totalCost >> realizedPL;
+
                 Global::accounts[curUser].holdings[sym] = qty; 
+                Global::accounts[curUser].avgCost[sym] = avgCost;
+                Global::accounts[curUser].totalCost[sym] = totalCost;
+                Global::accounts[curUser].realizedPL[sym] = realizedPL;
             }
         }
         std::cout << "Loaded " << Global::accounts.size() << " accounts.\n";
