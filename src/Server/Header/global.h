@@ -24,7 +24,7 @@ public:
 
 	static uint16_t tcpPort;
 	static uint16_t udpPort;
-
+	static std::string ipAddr;
 
 	/*--------------------------------------------------------------------------
 	 * Global exchange state  (protected by exMtx)

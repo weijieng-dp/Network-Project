@@ -177,29 +177,6 @@ static void broadcastServerMsg(const std::string& msg) {
     std::cout << "[BROADCAST] " << msg << "\n";
 }
 
-/*--------------------------------------------------------------------------
- * Economic crisis simulation state
- *--------------------------------------------------------------------------*/
-enum class CrisisPhase { NONE, SHOCK, PANIC, STABILIZE, RECOVERY };
-
-struct CrisisState {
-    std::atomic<int>     phase{ 0 };            // cast to/from CrisisPhase
-    std::atomic<int64_t> startMs{ 0 };
-    std::atomic<int64_t> phaseStartMs{ 0 };
-    std::atomic<double>  intensity{ 0.0 };      // 1.0 at trigger, decays to 0
-};
-static CrisisState g_crisis;
-
-static const int64_t CRISIS_SHOCK_MS = 15000;       // 15s flash crash
-static const int64_t CRISIS_PANIC_MS = 120000;      // 2min panic selling
-static const int64_t CRISIS_STABILIZE_MS = 180000;  // 3min volatile stabilization
-static const int64_t CRISIS_RECOVERY_MS = 300000;   // 5min gradual recovery
-
-// Per-symbol vulnerability: higher = crashes harder (safe-haven effect)
-static const std::unordered_map<std::string, double> CRISIS_VULNERABILITY = {
-    {"AAPL", 0.7}, {"GOOGL", 0.8}, {"MSFT", 0.6}, {"TSLA", 1.4}, {"AMZN", 1.0}
-};
-
 
 /*--------------------------------------------------------------------------
  * UDP broadcast helpers
@@ -1024,20 +1001,20 @@ static void clientSession(SOCKET sock) {
             break;
         }
 
-        case CMD_CRISIS: {
-            if (username.empty()) { sendServerMsg(sock, "Not logged in."); break; }
-            auto now = std::chrono::steady_clock::now();
-            int64_t nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                now.time_since_epoch()).count();
-            g_crisis.phase.store((int)CrisisPhase::SHOCK);
-            g_crisis.startMs.store(nowMs);
-            g_crisis.phaseStartMs.store(nowMs);
-            g_crisis.intensity.store(1.0);
-            broadcastServerMsg(
-                "*** BREAKING NEWS: ARMED CONFLICT ERUPTS -- "
-                "Global markets in freefall. All sectors affected. ***");
-            break;
-        }
+        //case CMD_CRISIS: {
+        //    if (username.empty()) { sendServerMsg(sock, "Not logged in."); break; }
+        //    auto now = std::chrono::steady_clock::now();
+        //    int64_t nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        //        now.time_since_epoch()).count();
+        //    g_crisis.phase.store((int)CrisisPhase::SHOCK);
+        //    g_crisis.startMs.store(nowMs);
+        //    g_crisis.phaseStartMs.store(nowMs);
+        //    g_crisis.intensity.store(1.0);
+        //    broadcastServerMsg(
+        //        "*** BREAKING NEWS: ARMED CONFLICT ERUPTS -- "
+        //        "Global markets in freefall. All sectors affected. ***");
+        //    break;
+        //}
 
         case CMD_STOP_ORDER: {
             if (username.empty()) { sendServerMsg(sock, "Not logged in."); break; }
@@ -1206,100 +1183,136 @@ static void persistThread() {
  * main()
  *--------------------------------------------------------------------------*/
 
-int old_main() {
-    // --- Step 1: Configuration ---
-    std::string tcpPortStr, udpPortStr, persistPath;
-    std::cout << "Server TCP Port Number: "; std::getline(std::cin, tcpPortStr);
-    while (!tcpPortStr.empty() && (tcpPortStr.back() == '\r' || tcpPortStr.back() == '\n')) tcpPortStr.pop_back();
-    std::cout << "Server UDP Port Number: "; std::getline(std::cin, udpPortStr);
-    while (!udpPortStr.empty() && (udpPortStr.back() == '\r' || udpPortStr.back() == '\n')) udpPortStr.pop_back();
-    std::cout << "Data directory (for persistence): "; std::getline(std::cin, persistPath);
-    while (!persistPath.empty() && (persistPath.back() == '\r' || persistPath.back() == '\n')) persistPath.pop_back();
-    Global::persistPath = persistPath;
-    uint16_t tcpPort = (uint16_t)std::stoi(tcpPortStr);
-    uint16_t udpPort = (uint16_t)std::stoi(udpPortStr);
+int main() {
 
-    // --- Step 2: Winsock ---
-    WSADATA wsaData{};
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != NO_ERROR) { std::cerr << "WSAStartup failed.\n"; return 1; }
-
-    // --- Step 3: TCP listener socket ---
-    addrinfo hints{}, * info = nullptr;
-    hints.ai_family = AF_INET; hints.ai_socktype = SOCK_STREAM; hints.ai_protocol = IPPROTO_TCP; hints.ai_flags = AI_PASSIVE;
-    if (getaddrinfo(nullptr, tcpPortStr.c_str(), &hints, &info) != 0 || !info) { std::cerr << "getaddrinfo failed.\n"; WSACleanup(); return 2; }
-    SOCKET listener = socket(info->ai_family, info->ai_socktype, info->ai_protocol);
-    if (listener == INVALID_SOCKET) { std::cerr << "socket failed.\n"; freeaddrinfo(info); WSACleanup(); return 3; }
-    if (bind(listener, info->ai_addr, (int)info->ai_addrlen) != 0) { std::cerr << "bind failed.\n"; freeaddrinfo(info); closesocket(listener); WSACleanup(); return 4; }
-    freeaddrinfo(info);
-    if (listen(listener, SOMAXCONN) != 0) { std::cerr << "listen failed.\n"; closesocket(listener); WSACleanup(); return 5; }
-
-    // --- Step 4: UDP socket for broadcasts ---
-    Global::udpSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (Global::udpSocket == INVALID_SOCKET) { std::cerr << "UDP socket failed.\n"; closesocket(listener); WSACleanup(); return 6; }
-    sockaddr_in udpBind{}; udpBind.sin_family = AF_INET; udpBind.sin_addr.s_addr = INADDR_ANY; udpBind.sin_port = htons(udpPort);
-    if (bind(Global::udpSocket, (sockaddr*)&udpBind, sizeof(udpBind)) != 0) { std::cerr << "UDP bind failed.\n"; closesocket(Global::udpSocket); closesocket(listener); WSACleanup(); return 7; }
-
-    // --- Step 5: Print server address ---
-    char hostname[256]; gethostname(hostname, sizeof(hostname));
-    addrinfo h{}, * hres = nullptr; h.ai_family = AF_INET;
-    if (getaddrinfo(hostname, nullptr, &h, &hres) == 0 && hres) {
-        char ip[INET_ADDRSTRLEN]; inet_ntop(AF_INET, &((sockaddr_in*)hres->ai_addr)->sin_addr, ip, sizeof(ip));
-        std::cout << "Server IP   : " << ip << "\n"; freeaddrinfo(hres);
-    }
-    std::cout << "TCP Port    : " << tcpPort << "\n";
-    std::cout << "UDP Port    : " << udpPort << "  (market data broadcasts)\n";
-    std::cout << "Symbols     : "; for (auto& s : Global::SYMBOLS) std::cout << s << " "; std::cout << "\n\n";
-
-    // --- Step 6: Load persisted data ---
+    // Read from a config file
+    // Read from persistent data file
     loadPersistentData();
 
-    // --- Step 6b: Seed house/market-maker account with initial quotes ---
+    // Initialize IMGUI
+    Display::Init();
+    Display::InitPorts();
+
+    // Initialize managers from config + persistent data
+
+
+    // Initialize WINSOCK
+    WSADATA wsaData{};
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != NO_ERROR) { 
+        std::cerr << "WSAStartup failed.\n"; 
+        return 1;
+    }
+
+    // TCP listener socket
+    addrinfo hints{};
+    addrinfo* info{ nullptr };
+
+    hints.ai_family = AF_INET; 
+    hints.ai_socktype = SOCK_STREAM; 
+    hints.ai_protocol = IPPROTO_TCP; 
+    hints.ai_flags = AI_PASSIVE;
+
+    int ERRORCODE = getaddrinfo(nullptr, std::to_string(Global::tcpPort).c_str(), &hints, &info);
+
+    if (ERRORCODE != 0) { 
+        std::cerr << "getaddrinfo failed.\n"; 
+        WSACleanup(); 
+        return 2; 
+    }
+
+    SOCKET listener = socket(info->ai_family, info->ai_socktype, info->ai_protocol);
+
+    if (listener == INVALID_SOCKET) { 
+        std::cerr << "socket failed.\n"; 
+        freeaddrinfo(info); 
+        WSACleanup(); 
+        return 3; 
+    }
+
+    ERRORCODE = bind(listener, info->ai_addr, (int)info->ai_addrlen);
+
+    if ( ERRORCODE != 0) { 
+        std::cerr << "bind failed.\n"; 
+        freeaddrinfo(info); 
+        closesocket(listener); 
+        WSACleanup(); 
+        return 4; 
+    }
+
+    freeaddrinfo(info);
+
+    ERRORCODE = listen(listener, SOMAXCONN);
+
+    if ( ERRORCODE != 0) { 
+        std::cerr << "listen failed.\n"; 
+        closesocket(listener); 
+        WSACleanup(); 
+        return 5; 
+    }
+
+    // UDP broadcast socket
+    Global::udpSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+
+    if (Global::udpSocket == INVALID_SOCKET) { 
+        std::cerr << "UDP socket failed.\n"; 
+        closesocket(listener); 
+        WSACleanup(); 
+        return 6; 
+    }
+
+    sockaddr_in udpBind{}; 
+    
+    udpBind.sin_family = AF_INET; 
+    udpBind.sin_addr.s_addr = INADDR_ANY; 
+    udpBind.sin_port = htons(Global::udpPort);
+
+    ERRORCODE = bind(Global::udpSocket, (sockaddr*)&udpBind, sizeof(udpBind));
+
+    if ( ERRORCODE != 0) { 
+        std::cerr << "UDP bind failed.\n"; 
+        closesocket(Global::udpSocket); 
+        closesocket(listener); 
+        WSACleanup(); 
+        return 7; 
+    }
+
+    // Print server address
+    char hostname[256]; 
+    gethostname(hostname, sizeof(hostname));
+
+    addrinfo h{};
+    addrinfo* hres{ nullptr }; 
+    
+    h.ai_family = AF_INET;
+
+    ERRORCODE = getaddrinfo(hostname, nullptr, &h, &hres);
+
+    if (ERRORCODE == 0) {
+        inet_ntop(AF_INET, &((sockaddr_in*)hres->ai_addr)->sin_addr, Global::ipAddr.data(), Global::ipAddr.size());
+        std::cout << "Server IP   : " << Global::ipAddr << "\n";
+        freeaddrinfo(hres);
+    }
+
+    std::cout << "TCP Port    : " << Global::tcpPort << "\n";
+    std::cout << "UDP Port    : " << Global::udpPort << "  (market data broadcasts)\n";
+    std::cout << "Symbols     : "; for (auto& s : Global::SYMBOLS) std::cout << s << " "; std::cout << "\n\n";
+
+
+    // Initialize Managers
     BotManager::Instance().InitMarketMaker();
     BotManager::Instance().InitBots();
-
-    // --- Step 6c: Initialize Managers
     CrisisManager::Init();
-
 
     // --- Step 7: Start background threads ---
     std::thread bcastThr(udpBroadcastThread);
     std::thread persThr(persistThread);
     std::thread simThr(simulationThread);
     std::thread clientThr(clientManager, listener);
-    
+
     while (Global::running.load()) {
         CrisisManager::Update();
         Display::Draw();
     }
-
-    // --- Shutdown ---
-    closesocket(listener);
-
-    bcastThr.join(); 
-    persThr.join(); 
-    simThr.join(); 
-    clientThr.join();
-
-    closesocket(Global::udpSocket);
-    WSACleanup();
-    return 0;
-}
-
-
-int main() {
-
-    // Initialize IMGUI
-    Display::Init();
-    Display::InitPorts();
-
-    // Read from a config file
-    // Read from persistent data file
-
-    // Initialize managers from config + persistent data
-
-    // Can probably start simulation already in a thread
-    
-    // If config file does not have port, prompt user for a port
 
     // Threads to run:
     // 1 thread for each client, can be handled by a form of ClientThreadManager
@@ -1313,6 +1326,17 @@ int main() {
     // Disconnect clients
     // Write stuff back into config and persistent
     // Close all threads
+    
+    // --- Shutdown ---
+    closesocket(listener);
 
-    return old_main();
+    bcastThr.join();
+    persThr.join();
+    simThr.join();
+    clientThr.join();
+
+    closesocket(Global::udpSocket);
+    WSACleanup();
+
+    return 0;
 }

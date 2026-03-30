@@ -188,35 +188,46 @@ void Display::InitPorts() {
         ImGui::NewFrame();
 
         bool open{ true };
+        static std::string buf(1024, '\0');
         ImGui::SetNextWindowSize({ 400.f,200.f }, ImGuiCond_Once);
         ImGui::SetNextWindowPos({ width / 2 - 200.f,height / 2 - 100.f }, ImGuiCond_Once);
         if (ImGui::Begin("Enter UDP and TCP port numbers:", &open, ImGuiWindowFlags_NoCollapse)) {
 
-            int udpPort{ 0 };
-            int tcpPort{ 0 };
+            static int udpPort{ 0 };
+            static int tcpPort{ 0 };
 
-            ImGui::Text("TCP Port: ");
+            ImGui::Text("TCP Port:      ");
             ImGui::SameLine();
 
             ImGui::PushID(0);
             ImGui::InputInt("", &tcpPort);
             ImGui::PopID();
 
-            ImGui::Text("UDP Port: ");
+            ImGui::Text("UDP Port:      ");
             ImGui::SameLine();
 
             ImGui::PushID(1);
             ImGui::InputInt("", &udpPort);
             ImGui::PopID();
 
+            ImGui::Text("Storage Folder:");
+            ImGui::SameLine();
+
+            ImGui::PushID(2);
+            ImGui::InputText("", buf.data(), 1024);
+            ImGui::PopID();
+            ImGui::Text("(optional)");
+
             ImGui::NewLine();
             ImGui::NewLine();
 
             if (ImGui::Button("   Confirm   ")) {
                 
-                if (!(tcpPort == 0 || udpPort == 0)) {
-                    Global::udpPort = static_cast<uint32_t>(udpPort);
-                    Global::tcpPort = static_cast<uint32_t>(tcpPort);
+                if (tcpPort > 0 && tcpPort < 65536 &&
+                    udpPort > 0 && udpPort < 65536) {
+                    Global::udpPort = static_cast<uint16_t>(udpPort);
+                    Global::tcpPort = static_cast<uint16_t>(tcpPort);
+                    Global::persistPath = buf;
                 }
             }
 
@@ -225,6 +236,12 @@ void Display::InitPorts() {
             }
             if (udpPort == 0) {
                 ImGui::Text("Please key in a value for UDP");
+            }
+            if (tcpPort > 65535) {
+                ImGui::Text("Please key in a value less than 65536 for the TCP port");
+            }
+            if (udpPort > 65535) {
+                ImGui::Text("Please key in a value less than 65536 for the TCP port");
             }
         }
 
@@ -255,8 +272,20 @@ void Display::Draw() {
     ImGui_ImplOpenGL3_NewFrame();
     
     ImGui::NewFrame();
-    if (ImGui::Begin("test")){
+    if (ImGui::Begin("Active Symbols:")){
         ImGui::Text("wallahi");
+    }
+    ImGui::End();
+
+    if (ImGui::Begin("Crisis Panel")) {
+
+    }
+    ImGui::End();
+
+    if (ImGui::Begin("Server Information")) {
+        ImGui::Text("Server TCP Port number: %d", Global::tcpPort);
+        ImGui::Text("Server UDP Port number: %d", Global::udpPort);
+        ImGui::Text("Server IP Address: %s", Global::ipAddr.c_str());
     }
     ImGui::End();
 

@@ -8,6 +8,7 @@ std::map<std::string, double> Global::REFERENCE_PRICES{
 
 uint16_t									Global::udpPort;
 uint16_t									Global::tcpPort;
+std::string									Global::ipAddr(32,'\0');
 
 std::mutex									Global::exMtx;   
 
