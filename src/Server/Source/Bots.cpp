@@ -752,6 +752,7 @@ void BotManager::ProcessStrategies(std::function<void(Order& ord, OrderBook& boo
 			TrendFollowingStrategy(bots[i], matchingfunction);
 			break;
 		case HerdBehavior:
+			HerdBehaviorStrategy(bots[i], matchingfunction);
 			break;
 		case PanicSelling:
 			break;
