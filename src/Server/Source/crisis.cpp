@@ -1,10 +1,10 @@
 #include "crisis.h"
 
 namespace {
-	static const int64_t CRISIS_SHOCK_MS = 30000;       // 30s flash crash
-	static const int64_t CRISIS_PANIC_MS = 60000;       // 1min panic selling
-	static const int64_t CRISIS_CRAZE_MS = 30000;		// 30s crazed buying
-	static const int64_t CRISIS_RAND_MS = 60000;		// 1min wild wild west
+	static const int64_t CRISIS_SHOCK_MS = 100000;       // 30s flash crash
+	static const int64_t CRISIS_PANIC_MS = 200000;       // 1min panic selling
+	static const int64_t CRISIS_CRAZE_MS = 100000;		// 30s crazed buying
+	static const int64_t CRISIS_RAND_MS = 100000;		// 1min wild wild west
 	static const int64_t MAX_CRISIS_MS   = 30000;
 }
 
@@ -32,7 +32,7 @@ void CrisisManager::Init() {
 	startTime = now();
 	prevTime = now();
 	timeSinceCrisis = std::chrono::milliseconds(0);
-	cooldownTime = std::chrono::milliseconds(0);
+	cooldownTime = std::chrono::milliseconds(300000);
 
 	// Initializing random devices
 	std::random_device rd;  // Will be used to obtain a seed for the random number engine
@@ -57,7 +57,7 @@ void CrisisManager::Update() {
 	}
 
 	timeSinceCrisis += dt;
-
+	
 	// If there is no crisis rn...
 	if (currState == static_cast<int>(Crisis::NONE)) {
 
@@ -90,9 +90,10 @@ void CrisisManager::Update() {
 	else {
 		// Set back to no crisis if timesincecrisis > the duration
 		if (timeSinceCrisis > crisisDuration) {
-			// 10 seconds cooldown period
-			cooldownTime = std::chrono::milliseconds(10000);
+			// 5 mins cooldown period
+			cooldownTime = std::chrono::milliseconds(300000);
 			timeSinceCrisis = std::chrono::milliseconds(0);
+			currState.exchange((int)Crisis::NONE);
 		}
 	}
 }

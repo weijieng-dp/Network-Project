@@ -369,8 +369,7 @@ static void checkConditionalOrders(const std::string& sym) {
 
         matchOrders(sord, book);
         /***************************************************************put market maker logic here****************************************************************/
-        BotManager::Instance().ProcessMarketMaker(matchOrders);   // ← add
-        BotManager::Instance().ProcessStrategies(matchOrders);    // ← add
+ 
 
         if (sord.qty > 0) {
             acc.holdings[sym] += sord.qty;
@@ -499,6 +498,7 @@ static void simulationThread() {
 
             BotManager::Instance().ProcessMarketMaker(matchOrders);
             BotManager::Instance().ProcessStrategies(matchOrders);
+
         }
 
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
@@ -880,8 +880,7 @@ static void clientSession(SOCKET sock) {
             matchOrders(ord, Global::books[sym]);
             // Re-quote MM after matching (deferred to avoid iterator invalidation)
         /***************************************************************put market maker logic here****************************************************************/
-            BotManager::Instance().ProcessMarketMaker(matchOrders);   // ← add
-            BotManager::Instance().ProcessStrategies(matchOrders);    // ← add
+
             checkConditionalOrders(sym);
             // Resources stay reserved while order rests in the book.
             // The cancel handler refunds on cancellation; recordTrade handles fills.
@@ -1265,7 +1264,7 @@ int main() {
     udpBind.sin_family = AF_INET; 
     udpBind.sin_addr.s_addr = INADDR_ANY; 
     udpBind.sin_port = htons(Global::udpPort);
-
+    
     ERRORCODE = bind(Global::udpSocket, (sockaddr*)&udpBind, sizeof(udpBind));
 
     if ( ERRORCODE != 0) { 
