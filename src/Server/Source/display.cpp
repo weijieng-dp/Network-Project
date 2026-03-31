@@ -53,7 +53,7 @@ void Display::Init() {
     ImGui_ImplOpenGL3_Init();
 
     ImGuiIO& io = ImGui::GetIO();
-    io.DisplaySize = ImVec2(width, height);
+    io.DisplaySize = ImVec2(static_cast<float>(width), static_cast<float>(height));
 
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;         // Enable Docking
@@ -341,7 +341,6 @@ void Display::Draw() {
                     }
                     close = tp.price;
                 }
-
 
                 plotMap[log.first].dates.push_back(plotMap[log.first].dates.size());
                 plotMap[log.first].opens.push_back(open);
