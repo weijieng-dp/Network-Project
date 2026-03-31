@@ -327,17 +327,19 @@ void Display::Draw() {
             for (const auto& log :newLog) {
                 if (log.second.empty()) continue;
 
-                double high, low, close;
+                double high = 0, low = 0, close = 0;
                 double open = -1.f;
                 for (const TradePoint& tp : log.second) {
                     if (open == -1.f) {
                         if (plotMap[log.first].closes.empty()) open = tp.price;
                         else open = plotMap[log.first].closes.back();
+                        high = std::max(open, tp.price);
+                        low  = std::min(open, tp.price);
+                    } else {
+                        high = std::max(high, tp.price);
+                        low  = std::min(low, tp.price);
                     }
-                    high = std::max(open, tp.price);
-                    low = std::min(open, tp.price);
                     close = tp.price;
-
                 }
 
 
@@ -350,25 +352,43 @@ void Display::Draw() {
 
         }
 
-        for (const auto& log : plotMap) {
-            if (log.second.dates.empty()) continue;
-            if (log.first != "GOOGL") continue;
+        static int selectedSymIdx = 0;
+        if (ImGui::BeginTabBar("##symbols")) {
+            for (int i = 0; i < (int)Global::SYMBOLS.size(); ++i) {
+                if (ImGui::BeginTabItem(Global::SYMBOLS[i].c_str())) {
+                    selectedSymIdx = i;
+                    ImGui::EndTabItem();
+                }
+            }
+            ImGui::EndTabBar();
+        }
 
-            if (ImPlot::BeginPlot(log.first.c_str())) {
+        const std::string& selectedSym = Global::SYMBOLS[selectedSymIdx];
+        auto it = plotMap.find(selectedSym);
+        if (it != plotMap.end() && !it->second.dates.empty()) {
+            int count = (int)it->second.dates.size();
 
-                //bool tooltip{ true };
+            // Compute Y-axis bounds from OHLC data (like client does)
+            double minLow = 1e18, maxHigh = -1e18;
+            for (int i = 0; i < count; ++i) {
+                if (it->second.lows[i] < minLow)   minLow  = it->second.lows[i];
+                if (it->second.highs[i] > maxHigh)  maxHigh = it->second.highs[i];
+            }
+            double pad = (maxHigh - minLow) * 0.08;
 
-                double minTime = *std::min_element(log.second.dates.begin(), log.second.dates.end());
-                double maxTime = *std::max_element(log.second.dates.begin(), log.second.dates.end());
-                ImPlot::SetupAxes(nullptr, nullptr, 0, ImPlotAxisFlags_AutoFit | ImPlotAxisFlags_RangeFit);
-                ImPlot::SetupAxisScale(ImAxis_X1, ImPlotScale_Time);
+            if (ImPlot::BeginPlot("##Candles", ImVec2(-1, -1))) {
+
+                ImPlot::SetupAxes(nullptr, nullptr, ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
+                ImPlot::SetupAxisLimits(ImAxis_X1, -1, count + 1, ImPlotCond_Always);
+                ImPlot::SetupAxisLimits(ImAxis_Y1, minLow - pad, maxHigh + pad, ImPlotCond_Always);
                 ImPlot::SetupAxisFormat(ImAxis_Y1, "$%.0f");
-                ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, minTime,maxTime);
-                MyImPlot::PlotCandlestick(log.second.dates.data(), log.second.opens.data(), log.second.closes.data(), 
-                                          log.second.lows.data(), log.second.highs.data(), log.second.dates.size());
+                MyImPlot::PlotCandlestick(it->second.dates.data(), it->second.opens.data(), it->second.closes.data(),
+                                          it->second.lows.data(), it->second.highs.data(), count);
                 ImPlot::EndPlot();
 
             }
+        } else {
+            ImGui::TextDisabled("No data yet for %s.", selectedSym.c_str());
         }
 
 
