@@ -92,9 +92,7 @@ target_link_libraries(Client
 	imgui::imgui
 	glm::glm
 	implot::implot
-	ftxui::screen
-	ftxui::dom
-	ftxui::component
+	opengl32
 	ws2_32
 	OpenSSL::Crypto
 	OpenSSL::SSL

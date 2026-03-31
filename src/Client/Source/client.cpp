@@ -59,19 +59,17 @@ prior written consent of DigiPen Institute of Technology is prohibited.
 #include <chrono>
 #include <sstream>
 #include <iomanip>
+#include <deque>
 #include "utils.h"
+#include "crypto.h"
 
-// FTXUI - Terminal UI library for interactive TUI
-#ifdef DrawText
-#undef DrawText
-#endif
-#include <ftxui/dom/elements.hpp>
-#include <ftxui/dom/canvas.hpp>
-#include <ftxui/screen/screen.hpp>
-#include <ftxui/component/component.hpp>
-#include <ftxui/component/screen_interactive.hpp>
-#include <ftxui/component/event.hpp>
-#include <crypto.h>
+// ImGui + ImPlot + OpenGL for windowed GUI
+#include <GL/glew.h>
+#include <GLFW/glfw3.h>
+#include <imgui.h>
+#include <imgui_impl_glfw.h>
+#include <imgui_impl_opengl3.h>
+#include <implot.h>
 
 static const int MAX_PAYLOAD = 8192;
 static const std::vector<std::string> SYMBOLS = {"AAPL","GOOGL","MSFT","TSLA","AMZN"};
@@ -160,8 +158,8 @@ static std::vector<uint8_t> g_sessionKey;
 static std::atomic<bool> g_dhEstablished{ false };
 static std::mutex g_dhMutex;
 
-// FTXUI screen reference for PostEvent from background threads
-static ftxui::ScreenInteractive* g_screenPtr = nullptr;
+// GLFW window reference for background threads to signal close
+static GLFWwindow* g_window = nullptr;
 
 /*--------------------------------------------------------------------------
  * TUI helpers
@@ -183,20 +181,15 @@ static std::string fmtMoney(double v) {
 }
 static std::string fmtPrice(double v) { std::ostringstream s; s<<std::fixed<<std::setprecision(4)<<v; return s.str(); }
 
-/** Append a message to the TUI log panel and trigger a screen refresh. */
+/** Append a message to the log panel. ImGui redraws every frame, no explicit refresh needed. */
 static void logMsg(const std::string& msg) {
-    {
-        std::lock_guard<std::mutex> lk(g_logMtx);
-        g_logMessages.push_back(msg);
-        while(g_logMessages.size()>MAX_LOG_LINES) g_logMessages.pop_front();
-    }
-    if(g_screenPtr) g_screenPtr->Post(ftxui::Event::Custom);
+    std::lock_guard<std::mutex> lk(g_logMtx);
+    g_logMessages.push_back(msg);
+    while(g_logMessages.size()>MAX_LOG_LINES) g_logMessages.pop_front();
 }
 
-/** Trigger a TUI screen refresh (call after updating any shared state). */
-static void refreshUI() {
-    if(g_screenPtr) g_screenPtr->Post(ftxui::Event::Custom);
-}
+/** No-op with ImGui — it redraws every frame at ~60 FPS. */
+static void refreshUI() {}
 
 /** Request chart data for a symbol from the server. */
 static void requestChart(const std::string& sym) {
@@ -366,7 +359,7 @@ static void tcpReceiveThread() {
             } else {
                 logMsg("[DISCONNECTED] Server connection closed.");
                 g_running=false;
-                if(g_screenPtr) g_screenPtr->Exit();
+                if(g_window) glfwSetWindowShouldClose(g_window, GLFW_TRUE);
             }
             break;
         }
@@ -381,7 +374,7 @@ static void tcpReceiveThread() {
             } else {
                 logMsg("[DISCONNECTED] Server connection closed mid-payload.");
                 g_running=false;
-                if(g_screenPtr) g_screenPtr->Exit();
+                if(g_window) glfwSetWindowShouldClose(g_window, GLFW_TRUE);
             }
             break;
         }
@@ -466,10 +459,6 @@ static void tcpReceiveThread() {
             logMsg("DH key exchange complete. Secure channel established.");
             break;
         }
-        case CMD_QUIT_OK:
-            g_running = false;
-            if (g_screenPtr) g_screenPtr->Exit();
-            break;
         default: logMsg("[WARN] Unknown server response: "+std::to_string(cmdId)); break;
         }
     }
@@ -658,7 +647,11 @@ static void processCommand(const std::string& line) {
     if(line.empty()) return;
     std::istringstream iss(line); std::string cmd; iss>>cmd;
 
-    if(cmd=="/q"||cmd=="/quit"||cmd=="/exit") { sendFrame(g_tcpSocket, CMD_QUIT, {}); }
+    if(cmd=="/q"||cmd=="/quit"||cmd=="/exit") {
+        sendFrame(g_tcpSocket, CMD_QUIT, {});
+        g_running=false;
+        if(g_window) glfwSetWindowShouldClose(g_window, GLFW_TRUE);
+    }
     else if(cmd=="/login")   { std::string u,pw; iss>>u>>pw; cmdLogin(u,pw); }
     else if(cmd=="/logout")  { cmdLogout(); }
     else if(cmd=="/buy"||cmd=="/sell") {
@@ -757,367 +750,198 @@ static std::vector<double> computeSMA(const std::vector<Candle>& candles, int pe
 }
 
 /*--------------------------------------------------------------------------
- * FTXUI Candlestick chart renderer (Canvas) — TradingView style
+ * ImPlot Candlestick chart renderer
  *--------------------------------------------------------------------------*/
 
-static ftxui::Element buildCandlestickChart() {
-    using namespace ftxui;
+/** Custom candlestick renderer using ImPlot public API (draw list after BeginPlot). */
+static void PlotCandlestick(const double* xs, const double* opens,
+    const double* closes, const double* lows, const double* highs, int count, float width_pct = 0.6f) {
+    ImDrawList* dl = ImPlot::GetPlotDrawList();
+    for (int i = 0; i < count; ++i) {
+        ImVec2 openPos  = ImPlot::PlotToPixels(xs[i], opens[i]);
+        ImVec2 closePos = ImPlot::PlotToPixels(xs[i], closes[i]);
+        ImVec2 lowPos   = ImPlot::PlotToPixels(xs[i], lows[i]);
+        ImVec2 highPos  = ImPlot::PlotToPixels(xs[i], highs[i]);
 
+        bool bullish = closes[i] >= opens[i];
+        ImU32 color = bullish ? IM_COL32(0, 200, 80, 255) : IM_COL32(220, 50, 50, 255);
+
+        float halfW = (count > 1)
+            ? (float)std::abs(ImPlot::PlotToPixels(xs[0], 0).x - ImPlot::PlotToPixels(xs[0] + 1, 0).x) * width_pct * 0.5f
+            : 8.0f;
+        halfW = (std::max)(halfW, 1.0f);
+
+        // Wick
+        dl->AddLine(ImVec2(highPos.x, highPos.y), ImVec2(lowPos.x, lowPos.y), color, 1.0f);
+        // Body
+        float top = (std::min)(openPos.y, closePos.y);
+        float bot = (std::max)(openPos.y, closePos.y);
+        if (bot - top < 1.0f) bot = top + 1.0f;
+        dl->AddRectFilled(ImVec2(openPos.x - halfW, top), ImVec2(openPos.x + halfW, bot), color);
+    }
+}
+
+static void drawCandlestickChart() {
     std::lock_guard<std::mutex> clk(g_chartMtx);
     std::string sym = g_chartSymbol.empty() ? SYMBOLS[g_chartSymIdx] : g_chartSymbol;
-    auto& candles = g_chartCandles;
 
-    if(candles.empty()) {
-        return vbox({
-            text(" CANDLESTICK CHART: " + sym) | bold,
-            separator(),
-            text("  No data yet. Login and trade to see the chart.") | center | flex,
-        }) | border | color(Color::White);
+    if (g_chartCandles.empty()) {
+        ImGui::TextDisabled("No data yet. Login and trade to see the chart.");
+        return;
     }
 
-    // Snapshot candle data (we hold the lock), apply zoom
-    std::vector<Candle> candlesCopy = candles;
-    std::string symCopy = sym;
-    // Zoom: only show the last g_chartZoom candles
-    if ((int)candlesCopy.size() > g_chartZoom) {
-        candlesCopy = std::vector<Candle>(candlesCopy.end() - g_chartZoom, candlesCopy.end());
+    // Apply zoom
+    int start = (int)g_chartCandles.size() > g_chartZoom ? (int)g_chartCandles.size() - g_chartZoom : 0;
+    int count = (int)g_chartCandles.size() - start;
+
+    // OHLC header
+    auto& lastC = g_chartCandles.back();
+    auto& firstC = g_chartCandles[start];
+    double pctChange = (firstC.close > 0.001) ? ((lastC.close - firstC.close) / firstC.close * 100.0) : 0.0;
+    uint32_t totalVol = 0;
+    for (int i = start; i < (int)g_chartCandles.size(); ++i) totalVol += g_chartCandles[i].vol;
+
+    ImGui::TextColored(ImVec4(1,1,0,1), "%s", sym.c_str()); ImGui::SameLine();
+    ImVec4 chgClr = pctChange >= 0 ? ImVec4(0,1,0,1) : ImVec4(1,0,0,1);
+    ImGui::TextColored(chgClr, "%+.2f%%", pctChange); ImGui::SameLine();
+    ImGui::TextDisabled("|"); ImGui::SameLine();
+    ImGui::Text("O:%.2f", lastC.open); ImGui::SameLine();
+    ImGui::TextColored(ImVec4(0.5f,1,0.5f,1), "H:%.2f", lastC.high); ImGui::SameLine();
+    ImGui::TextColored(ImVec4(1,0.5f,0.5f,1), "L:%.2f", lastC.low); ImGui::SameLine();
+    bool bullish = lastC.close >= lastC.open;
+    ImGui::TextColored(bullish ? ImVec4(0,1,0,1) : ImVec4(1,0,0,1), "C:%.2f", lastC.close); ImGui::SameLine();
+    ImGui::TextDisabled("V:%u", totalVol);
+
+    // Prepare plot data arrays
+    static std::vector<double> xs, opens, highs, lows, closes;
+    xs.resize(count); opens.resize(count); highs.resize(count); lows.resize(count); closes.resize(count);
+    double minLow = 1e18, maxHigh = -1e18;
+    for (int i = 0; i < count; ++i) {
+        auto& c = g_chartCandles[start + i];
+        xs[i] = i;
+        opens[i] = c.open; highs[i] = c.high;
+        lows[i] = c.low;   closes[i] = c.close;
+        if (c.low < minLow) minLow = c.low;
+        if (c.high > maxHigh) maxHigh = c.high;
     }
-    int numCandles=(int)candlesCopy.size();
+    double pad = (maxHigh - minLow) * 0.08;
 
-    // Find price range
-    double minLow=1e18, maxHigh=-1e18;
-    uint32_t totalVol=0;
-    for(auto&c:candlesCopy){
-        if(c.low<minLow) minLow=c.low;
-        if(c.high>maxHigh) maxHigh=c.high;
-        totalVol+=c.vol;
+    if (ImPlot::BeginPlot("##Candles", ImVec2(-1, -1))) {
+        ImPlot::SetupAxes("Time", "Price", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
+        ImPlot::SetupAxisLimits(ImAxis_X1, -1, count + 1, ImPlotCond_Always);
+        ImPlot::SetupAxisLimits(ImAxis_Y1, minLow - pad, maxHigh + pad, ImPlotCond_Always);
+
+        PlotCandlestick(xs.data(), opens.data(), closes.data(),
+            lows.data(), highs.data(), count);
+
+        // SMA-10 overlay
+        auto sma = computeSMA(
+            std::vector<Candle>(g_chartCandles.begin() + start, g_chartCandles.end()), 10);
+        static std::vector<double> smaXs, smaVals;
+        smaXs.clear(); smaVals.clear();
+        for (int i = 9; i < count; ++i) {
+            if (sma[i] > 0) { smaXs.push_back(xs[i]); smaVals.push_back(sma[i]); }
+        }
+        if (!smaXs.empty()) {
+            ImPlot::SetNextLineStyle(ImVec4(1, 0.8f, 0, 1), 1.5f);
+            ImPlot::PlotLine("SMA-10", smaXs.data(), smaVals.data(), (int)smaXs.size());
+        }
+
+        ImPlot::EndPlot();
     }
-    double range=maxHigh-minLow;
-    if(range<0.01) range=1.0;
-    // Just add padding — let the candle data drive the range naturally
-    double pad=range*0.08;
-    double priceLow=minLow-pad, priceHigh=maxHigh+pad;
-    double priceRange=priceHigh-priceLow;
-
-    // Find max volume for volume bar scaling
-    uint32_t maxVol = 0;
-    for(auto&c:candlesCopy){
-        if(c.vol > maxVol) maxVol = c.vol;
-    }
-
-    auto lastC = candlesCopy.back();
-    auto firstC = candlesCopy.front();
-    double pctChange = (firstC.close > 0.001)
-        ? ((lastC.close - firstC.close) / firstC.close * 100.0) : 0.0;
-    bool lastBullish = (lastC.close >= lastC.open);
-
-    // Compute SMA-10
-    auto sma10 = computeSMA(candlesCopy, 10);
-
-    // Format helper
-    auto fmt2 = [](double v) -> std::string {
-        std::ostringstream s; s << std::fixed << std::setprecision(2) << v; return s.str();
-    };
-
-    // OHLC header strings
-    std::string ohlcStr = "O:" + fmt2(lastC.open) + "  H:" + fmt2(lastC.high)
-                        + "  L:" + fmt2(lastC.low) + "  C:" + fmt2(lastC.close)
-                        + "  V:" + std::to_string(totalVol);
-    std::string chgStr = (pctChange >= 0 ? "+" : "") + fmt2(pctChange) + "%";
-
-    // ── Canvas rendering (TradingView lightweight-charts style) ─────────
-    // Rendering logic ported from tradingview/lightweight-charts:
-    //   src/renderers/candlesticks-renderer.ts
-    //   src/renderers/optimal-bar-width.ts
-    auto chartElement = canvas([=](Canvas& chart) {
-        int cw = chart.width();
-        int ch = chart.height();
-        if(cw < 30 || ch < 16) return;
-
-        int leftMargin   = 2;
-        int rightMargin  = 20;
-        int topMargin    = 2;
-        int bottomMargin = 6;
-
-        int plotW = cw - leftMargin - rightMargin;
-        int plotH = ch - topMargin - bottomMargin;
-        if(plotW < 10 || plotH < 8) return;
-
-        // Bar spacing (pixels per candle slot) — fit all candles with room
-        double barSpacing = (double)plotW / std::max(numCandles, 1);
-        if(barSpacing > 10.0) barSpacing = 10.0;
-        if(barSpacing < 2.0)  barSpacing = 2.0;
-        int candleWidth = (int)barSpacing;
-
-        // TradingView's optimalCandlestickWidth (from optimal-bar-width.ts)
-        // coeff = 1 - 0.2 * atan(max(4, barSpacing) - 4) / (PI/2)
-        // bodyWidth = floor(barSpacing * coeff)
-        int bodyWidth;
-        if(barSpacing >= 2.5 && barSpacing <= 4.0) {
-            bodyWidth = 3;  // special case: fixed 3px
-        } else {
-            double coeff = 1.0 - 0.2 * std::atan(std::max(4.0, barSpacing) - 4.0) / (3.14159265 * 0.5);
-            bodyWidth = (int)(barSpacing * coeff);
-            bodyWidth = std::min(bodyWidth, candleWidth);
-            bodyWidth = std::max(1, bodyWidth);
-        }
-        int bodyHalf = bodyWidth / 2;
-
-        // Wick width = 1 block (TradingView: floor(pixelRatio) = 1)
-        // Ensure body and wick have matching parity for centering
-        if(bodyWidth >= 2 && (1 % 2) != (bodyWidth % 2)) {
-            bodyWidth--;
-            bodyHalf = bodyWidth / 2;
-        }
-
-        auto priceToY = [&](double price) -> int {
-            return topMargin + (int)((priceHigh - price) / priceRange * plotH);
-        };
-
-        // ── Price axis with "nice" round numbers + horizontal grid lines ──
-        // Pick a nice tick interval based on the price range (like TradingView)
-        // Target ~4-8 labels on the axis
-        double rawTick = priceRange / 6.0;
-        // Round to a "nice" number: 0.25, 0.50, 1.00, 2.00, 5.00, 10.00, 25.00, 50.00...
-        double niceSteps[] = {0.10, 0.25, 0.50, 1.00, 2.00, 5.00, 10.00, 25.00, 50.00, 100.00};
-        double tickSize = niceSteps[0];
-        for (double ns : niceSteps) {
-            if (ns >= rawTick) { tickSize = ns; break; }
-        }
-
-        int axisX = leftMargin + plotW + 2;
-        // Draw labels at each tick from below priceLow to above priceHigh
-        double firstTick = std::floor(priceLow / tickSize) * tickSize;
-        for (double px = firstTick; px <= priceHigh + tickSize * 0.5; px += tickSize) {
-            if (px < priceLow) continue;
-            int y = priceToY(px);
-            if (y < topMargin || y > topMargin + plotH) continue;
-
-            // Horizontal grid line (dashed, subtle)
-            for (int gx = leftMargin; gx < leftMargin + plotW; gx += 4) {
-                chart.DrawBlock(gx, y, true, Color::GrayDark);
-            }
-
-            // Price label on the right
-            std::string lbl = fmt2(px);
-            int textX = axisX + 2;
-            if (textX < 0) textX = 0;
-            chart.DrawText(textX, (y / 4) * 4, lbl, Color::GrayLight);
-        }
-
-        // Always show the last price with a highlighted label
-        {
-            int yLast = priceToY(lastC.close);
-            if (yLast >= topMargin && yLast <= topMargin + plotH) {
-                // Dashed line across for current price
-                Color lastClr = lastBullish ? Color::Green : Color::Red;
-                for (int gx = leftMargin; gx < leftMargin + plotW; gx += 3) {
-                    chart.DrawBlock(gx, yLast, true, lastClr);
-                }
-                // Price label highlighted
-                std::string lbl = fmt2(lastC.close);
-                int textX = axisX + 2;
-                if (textX < 0) textX = 0;
-                chart.DrawText(textX, (yLast / 4) * 4, lbl, lastClr);
-            }
-        }
-
-        // ── Draw candles (right-aligned, TradingView draw order) ─────
-        int totalCandlesW = numCandles * candleWidth;
-        int candleStartX = leftMargin;  // left-aligned: oldest candle on the left
-        (void)totalCandlesW;
-
-        int prevRightEdge = -1;  // overlap prevention (from candlesticks-renderer.ts)
-
-        for(int i = 0; i < numCandles; ++i) {
-            auto& c = candlesCopy[i];
-            int cx = candleStartX + i * candleWidth + candleWidth / 2;
-            if(cx >= leftMargin + plotW) break;
-
-            int yHigh  = priceToY(c.high);
-            int yLow   = priceToY(c.low);
-            int yOpen  = priceToY(c.open);
-            int yClose = priceToY(c.close);
-
-            bool bullish = (c.close >= c.open);
-            Color clr    = bullish ? Color::Green : Color::Red;
-
-            int bodyTop = bullish ? yClose : yOpen;
-            int bodyBot = bullish ? yOpen  : yClose;
-            if(bodyTop == bodyBot) bodyBot = bodyTop + 1;
-
-            // Overlap prevention: clamp left edge to prevRightEdge + 1
-            int left  = cx - bodyHalf;
-            int right = cx + bodyHalf;
-            if(prevRightEdge >= 0 && left <= prevRightEdge) {
-                left = prevRightEdge + 1;
-                if(left > right) left = right;
-            }
-            prevRightEdge = right;
-
-            // --- TradingView draw order: wicks first, then body ---
-
-            // Upper wick (high → body top) — thin, 1 block wide
-            if(yHigh < bodyTop) {
-                chart.DrawBlockLine(cx, yHigh, cx, bodyTop - 1, clr);
-            }
-            // Lower wick (body bottom → low)
-            if(yLow > bodyBot) {
-                chart.DrawBlockLine(cx, bodyBot + 1, cx, yLow, clr);
-            }
-
-            // Body — solid filled rectangle (left to right, overlap-aware)
-            for(int y = bodyTop; y <= bodyBot; ++y) {
-                for(int dx = left; dx <= right; ++dx) {
-                    chart.DrawBlock(dx, y, true, clr);
-                }
-            }
-        }
-
-        // ── Time labels at bottom ────────────────────────────────────
-        int labelInterval = numCandles <= 8 ? 1 : (numCandles <= 20 ? 2 : (numCandles <= 60 ? 4 : 8));
-        int xAxisY = topMargin + plotH;
-        int timeLabelY = xAxisY + 2;
-        for(int i = 0; i < numCandles; i += labelInterval) {
-            int cx = candleStartX + i * candleWidth + candleWidth / 2;
-            if(cx >= leftMargin + plotW) break;
-            std::string lbl = candlesCopy[i].dt;
-            if(lbl.size() > 5) lbl = lbl.substr(0, 5);
-            int textX = cx - (int)lbl.size();
-            if(textX < 0) textX = 0;
-            chart.DrawText(textX, (timeLabelY / 4) * 4, lbl, Color::GrayLight);
-        }
-    });
-
-    // ── Build the FTXUI element tree ──────────────────────────────────
-    auto chgColor = pctChange >= 0 ? Color::Green : Color::Red;
-    auto lastClrUI = lastBullish ? Color::Green : Color::Red;
-
-    return vbox({
-        // Header: SYMBOL  %change | O: H: L: C: V:
-        hbox({
-            text(" " + symCopy + " ") | bold | color(Color::Yellow),
-            text(" " + chgStr + " ") | bold | color(chgColor),
-            text(" | ") | dim,
-            text("O:" + fmt2(lastC.open) + " "),
-            text("H:" + fmt2(lastC.high) + " ") | color(Color::GreenLight),
-            text("L:" + fmt2(lastC.low) + " ")  | color(Color::RedLight),
-            text("C:" + fmt2(lastC.close) + " ") | bold | color(lastClrUI),
-            text("V:" + std::to_string(totalVol) + " ") | dim,
-            filler(),
-            text(" [Tab] switch ") | dim,
-        }),
-        separator(),
-        chartElement | flex,
-        separator(),
-        hbox({
-            text(" ") | bgcolor(Color::Green), text(" Bull "),
-            text("  "),
-            text(" ") | bgcolor(Color::Red), text(" Bear "),
-            filler(),
-            text(" " + std::to_string(numCandles) + " candles | Scroll to zoom ") | dim,
-        }),
-    }) | border;
 }
 
 /*--------------------------------------------------------------------------
- * FTXUI Market data panel
+ * ImGui Market data panel
  *--------------------------------------------------------------------------*/
 
-static ftxui::Element buildMarketPanel() {
-    using namespace ftxui;
+static void drawMarketPanel() {
+    ImGui::TextColored(ImVec4(0,1,1,1), "MARKET DATA");
+    ImGui::Separator();
 
-    std::lock_guard<std::mutex> lk(g_mktMtx);
-    Elements rows;
-    rows.push_back(hbox({text(" MARKET DATA ") | bold | color(Color::Cyan)}));
-    rows.push_back(separator());
-    rows.push_back(hbox({
-        text(" SYM  ") | bold, text(" Bid      ") | bold,
-        text(" Ask      ") | bold, text(" Last     ") | bold, text(" Vol  ") | bold,
-    }));
+    if (ImGui::BeginTable("##mkt", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV)) {
+        ImGui::TableSetupColumn("SYM");
+        ImGui::TableSetupColumn("Bid");
+        ImGui::TableSetupColumn("Ask");
+        ImGui::TableSetupColumn("Last");
+        ImGui::TableSetupColumn("Vol");
+        ImGui::TableHeadersRow();
 
-    for(auto& sym : SYMBOLS) {
-        auto it = g_marketData.find(sym);
-        if(it != g_marketData.end()) {
-            auto& m = it->second;
-            std::ostringstream bid,ask,last;
-            bid<<std::fixed<<std::setprecision(2)<<m.bid;
-            ask<<std::fixed<<std::setprecision(2)<<m.ask;
-            last<<std::fixed<<std::setprecision(2)<<m.last;
-            bool isViewed = (sym == SYMBOLS[g_chartSymIdx]);
-            auto row = hbox({
-                text(" " + sym + " ") | (isViewed ? color(Color::Yellow) : color(Color::White)),
-                text(" " + bid.str() + " ") | color(Color::Green),
-                text(" " + ask.str() + " ") | color(Color::Red),
-                text(" " + last.str() + " "),
-                text(" " + std::to_string(m.vol) + " ") | dim,
-            });
-            rows.push_back(row);
-        } else {
-            rows.push_back(text(" " + sym + "  --") | dim);
+        std::lock_guard<std::mutex> lk(g_mktMtx);
+        for (auto& sym : SYMBOLS) {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            bool viewed = (sym == SYMBOLS[g_chartSymIdx]);
+            if (viewed) ImGui::TextColored(ImVec4(1,1,0,1), "%s", sym.c_str());
+            else ImGui::Text("%s", sym.c_str());
+
+            auto it = g_marketData.find(sym);
+            if (it != g_marketData.end()) {
+                auto& m = it->second;
+                ImGui::TableNextColumn(); ImGui::TextColored(ImVec4(0,1,0,1), "%.2f", m.bid);
+                ImGui::TableNextColumn(); ImGui::TextColored(ImVec4(1,0,0,1), "%.2f", m.ask);
+                ImGui::TableNextColumn(); ImGui::Text("%.2f", m.last);
+                ImGui::TableNextColumn(); ImGui::TextDisabled("%u", m.vol);
+            } else {
+                ImGui::TableNextColumn(); ImGui::TextDisabled("--");
+                ImGui::TableNextColumn(); ImGui::TextDisabled("--");
+                ImGui::TableNextColumn(); ImGui::TextDisabled("--");
+                ImGui::TableNextColumn(); ImGui::TextDisabled("--");
+            }
         }
+        ImGui::EndTable();
     }
-    return vbox(rows) | border | flex;
 }
 
 /*--------------------------------------------------------------------------
- * FTXUI Account panel
+ * ImGui Account panel
  *--------------------------------------------------------------------------*/
 
-static ftxui::Element buildAccountPanel() {
-    using namespace ftxui;
-
+static void drawAccountPanel() {
     std::lock_guard<std::mutex> lk(g_stateMtx);
-    Elements rows;
-    if(!g_loggedIn) {
-        rows.push_back(text(" ACCOUNT ") | bold | color(Color::Cyan));
-        rows.push_back(separator());
-        rows.push_back(text(" Not logged in") | dim);
-        rows.push_back(text(" /login <user> <pass>") | dim);
+    if (!g_loggedIn) {
+        ImGui::TextColored(ImVec4(0,1,1,1), "ACCOUNT");
+        ImGui::Separator();
+        ImGui::TextDisabled("Not logged in");
+        ImGui::TextDisabled("/login <user> <pass>");
     } else {
-        rows.push_back(hbox({text(" ACCOUNT: ") | bold | color(Color::Cyan), text(g_username) | bold}));
-        rows.push_back(separator());
-        rows.push_back(hbox({text(" Cash: ") | bold, text(fmtMoney(g_cash)) | color(Color::Green)}));
-        if(!g_holdings.empty()){
-            rows.push_back(text(" Holdings:") | bold);
-            for(auto&[sym,qty]:g_holdings)
-                rows.push_back(text("  " + sym + " x" + std::to_string(qty)));
+        ImGui::TextColored(ImVec4(0,1,1,1), "ACCOUNT: %s", g_username.c_str());
+        ImGui::Separator();
+        ImGui::TextColored(ImVec4(0,1,0,1), "Cash: %s", fmtMoney(g_cash).c_str());
+        if (!g_holdings.empty()) {
+            ImGui::Text("Holdings:");
+            for (auto& [sym, qty] : g_holdings)
+                ImGui::BulletText("%s x%u", sym.c_str(), qty);
         }
-        if(!g_openOrders.empty()){
-            rows.push_back(separator());
-            rows.push_back(text(" Orders (" + std::to_string(g_openOrders.size()) + "):") | bold);
-            for(auto&[oid,lo]:g_openOrders)
-                rows.push_back(text("  #" + std::to_string(oid) + " " +
-                    std::string(lo.side=='B'?"B":"S") + " " + std::to_string(lo.qty) + "x" + lo.sym));
+        if (!g_openOrders.empty()) {
+            ImGui::Separator();
+            ImGui::Text("Orders (%zu):", g_openOrders.size());
+            for (auto& [oid, lo] : g_openOrders)
+                ImGui::BulletText("#%llu %c %ux%s", (unsigned long long)oid, lo.side, lo.qty, lo.sym.c_str());
         }
     }
-    return vbox(rows) | border | flex;
 }
 
 /*--------------------------------------------------------------------------
- * FTXUI Log panel
+ * ImGui Log panel
  *--------------------------------------------------------------------------*/
 
-static ftxui::Element buildLogPanel() {
-    using namespace ftxui;
-
+static void drawLogPanel() {
     std::lock_guard<std::mutex> lk(g_logMtx);
-    Elements lines;
-    // Show last ~8 messages
-    size_t start = g_logMessages.size() > 8 ? g_logMessages.size() - 8 : 0;
-    for(size_t i=start; i<g_logMessages.size(); ++i) {
-        auto& msg = g_logMessages[i];
-        Color clr = Color::White;
-        if(msg.find("TRADE")!=std::string::npos || msg.find("BOUGHT")!=std::string::npos || msg.find("SOLD")!=std::string::npos)
-            clr = Color::Yellow;
-        else if(msg.find("REJECTED")!=std::string::npos || msg.find("FAILED")!=std::string::npos)
-            clr = Color::Red;
-        else if(msg.find("ACCEPTED")!=std::string::npos || msg.find("LOGIN OK")!=std::string::npos)
-            clr = Color::Green;
-        lines.push_back(text(" " + msg) | color(clr));
+    for (auto& msg : g_logMessages) {
+        ImVec4 clr(1,1,1,1);
+        if (msg.find("TRADE") != std::string::npos || msg.find("BOUGHT") != std::string::npos || msg.find("SOLD") != std::string::npos)
+            clr = ImVec4(1,1,0,1);
+        else if (msg.find("REJECTED") != std::string::npos || msg.find("FAILED") != std::string::npos)
+            clr = ImVec4(1,0,0,1);
+        else if (msg.find("ACCEPTED") != std::string::npos || msg.find("LOGIN OK") != std::string::npos)
+            clr = ImVec4(0,1,0,1);
+        ImGui::TextColored(clr, "%s", msg.c_str());
     }
-    if(lines.empty()) lines.push_back(text(" Welcome! Type /login <username> to begin.") | dim);
-    return vbox(lines);
+    if (g_logMessages.empty()) ImGui::TextDisabled("Welcome! Type /login <username> to begin.");
+    // Auto-scroll to bottom
+    if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 10.0f)
+        ImGui::SetScrollHereY(1.0f);
 }
 
 /*--------------------------------------------------------------------------
@@ -1173,79 +997,132 @@ int main() {
     // --- Step 6: Subscribe to UDP market data ---
     cmdSubMarket(localUdpPort);
 
-    // --- Step 7: FTXUI full-screen TUI ---
+    // --- Step 7: ImGui/ImPlot windowed GUI ---
     {
-        using namespace ftxui;
-        auto screen = ScreenInteractive::Fullscreen();
-        g_screenPtr = &screen;
+        // GLFW init
+        if (!glfwInit()) { std::cerr << "GLFW init failed\n"; return 7; }
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+        glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+        GLFWwindow* window = glfwCreateWindow(1400, 900, "Trading Platform", nullptr, nullptr);
+        if (!window) { glfwTerminate(); return 8; }
+        glfwMakeContextCurrent(window);
+        glfwSwapInterval(1); // vsync
+        g_window = window;
 
-        // Command input
-        std::string inputStr;
-        auto inputBox = Input(&inputStr, " Type command here (/help for commands)...");
+        // GLEW init
+        glewExperimental = GL_TRUE;
+        if (glewInit() != GLEW_OK) { std::cerr << "GLEW init failed\n"; return 9; }
 
-        // Wrap to handle Enter key and Tab
-        auto inputComponent = CatchEvent(inputBox, [&](Event event) {
-            if(event == Event::Return) {
-                std::string cmd = inputStr;
-                inputStr.clear();
-                processCommand(cmd);
-                return true;
-            }
-            // Tab to switch chart symbol
-            if(event == Event::Tab) {
-                g_chartSymIdx = (g_chartSymIdx + 1) % (int)SYMBOLS.size();
-                requestChart(SYMBOLS[g_chartSymIdx]);
-                cmdQueryMarket(SYMBOLS[g_chartSymIdx]);
-                return true;
-            }
-            return false;
-        });
+        // ImGui + ImPlot init
+        IMGUI_CHECKVERSION();
+        ImGui::CreateContext();
+        ImPlot::CreateContext();
+        // Build imgui.ini path relative to this source file's directory
+        static std::string iniPath = []() {
+            std::string dir = __FILE__;
+            size_t pos = dir.find_last_of("\\/");
+            if (pos != std::string::npos) dir = dir.substr(0, pos + 1);
+            return dir + "imgui.ini";
+        }();
+        ImGuiIO& io = ImGui::GetIO();
+        io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+        io.IniFilename = iniPath.c_str();
+        ImGui::StyleColorsDark();
+        ImGui_ImplGlfw_InitForOpenGL(window, true);
+        ImGui_ImplOpenGL3_Init("#version 330");
 
-        // Build the TUI layout
-        auto innerRenderer = Renderer(inputComponent, [&] {
-            return vbox({
-                // Top: Candlestick chart (takes most space)
-                buildCandlestickChart() | flex,
-                // Middle: Market data + Account side by side
-                hbox({
-                    buildMarketPanel(),
-                    buildAccountPanel(),
-                }) | size(HEIGHT, LESS_THAN, 12),
-                // Log messages
-                hbox({text(" LOG ") | bold | color(Color::Cyan)}) | borderLight,
-                buildLogPanel() | size(HEIGHT, LESS_THAN, 9),
-                // Input
-                hbox({
-                    text(" > ") | bold | color(Color::Green),
-                    inputComponent->Render() | flex,
-                }) | border,
-            });
-        });
+        // Command input buffer
+        static char inputBuf[256] = {};
+        static bool focusInput = true;
 
-        // Wrap entire UI to catch mouse scroll anywhere on screen
-        auto renderer = CatchEvent(innerRenderer, [&](Event event) {
-            if(event.is_mouse()) {
-                if(event.mouse().button == Mouse::WheelUp) {
-                    g_chartZoom = (std::max)(10, g_chartZoom - 5);
-                    return true;
-                }
-                if(event.mouse().button == Mouse::WheelDown) {
-                    g_chartZoom = (std::min)(120, g_chartZoom + 5);
-                    return true;
-                }
-            }
-            return false;
-        });
-
-        // Initial log
         logMsg("Connected to " + serverIP + ":" + tcpPortStr + ". Type /login <username> <password> to start.");
-        logMsg("Commands: /help | Tab = switch chart symbol | /q = quit");
+        logMsg("Commands: /help | /q = quit");
 
         // Request initial market data for all symbols
-        for(auto& sym : SYMBOLS) cmdQueryMarket(sym);
+        for (auto& sym : SYMBOLS) cmdQueryMarket(sym);
 
-        screen.Loop(renderer);
-        g_screenPtr = nullptr;
+        // Main render loop
+        while (!glfwWindowShouldClose(window) && g_running) {
+            glfwPollEvents();
+
+            // Mouse wheel zoom (when not over an ImGui scroll region)
+            if (io.MouseWheel != 0 && !ImGui::IsAnyItemActive()) {
+                g_chartZoom = std::clamp(g_chartZoom - (int)(io.MouseWheel * 5), 10, 120);
+            }
+
+            ImGui_ImplOpenGL3_NewFrame();
+            ImGui_ImplGlfw_NewFrame();
+            ImGui::NewFrame();
+
+            // Full-window dockspace
+            ImGui::DockSpaceOverViewport();
+
+            // --- Candlestick Chart Window ---
+            ImGui::Begin("Chart");
+            if (ImGui::BeginTabBar("##symbols")) {
+                for (int i = 0; i < (int)SYMBOLS.size(); ++i) {
+                    if (ImGui::BeginTabItem(SYMBOLS[i].c_str())) {
+                        if (g_chartSymIdx != i) {
+                            g_chartSymIdx = i;
+                            requestChart(SYMBOLS[i]);
+                            cmdQueryMarket(SYMBOLS[i]);
+                        }
+                        ImGui::EndTabItem();
+                    }
+                }
+                ImGui::EndTabBar();
+            }
+            ImGui::TextDisabled("%d candles | Scroll to zoom", g_chartZoom);
+            drawCandlestickChart();
+            ImGui::End();
+
+            // --- Market Data Window ---
+            ImGui::Begin("Market Data");
+            drawMarketPanel();
+            ImGui::End();
+
+            // --- Account Window ---
+            ImGui::Begin("Account");
+            drawAccountPanel();
+            ImGui::End();
+
+            // --- Log Window ---
+            ImGui::Begin("Log");
+            drawLogPanel();
+            ImGui::End();
+
+            // --- Command Input Window ---
+            ImGui::Begin("Command");
+            ImGui::TextColored(ImVec4(0,1,0,1), ">"); ImGui::SameLine();
+            ImGui::SetNextItemWidth(-1);
+            if (focusInput) { ImGui::SetKeyboardFocusHere(); focusInput = false; }
+            if (ImGui::InputText("##cmd", inputBuf, sizeof(inputBuf), ImGuiInputTextFlags_EnterReturnsTrue)) {
+                processCommand(std::string(inputBuf));
+                inputBuf[0] = '\0';
+                focusInput = true;  // re-focus after command
+            }
+            ImGui::End();
+
+            // Render
+            ImGui::Render();
+            int dw, dh;
+            glfwGetFramebufferSize(window, &dw, &dh);
+            glViewport(0, 0, dw, dh);
+            glClearColor(0.06f, 0.06f, 0.08f, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT);
+            ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+            glfwSwapBuffers(window);
+        }
+
+        // Cleanup
+        ImGui_ImplOpenGL3_Shutdown();
+        ImGui_ImplGlfw_Shutdown();
+        ImPlot::DestroyContext();
+        ImGui::DestroyContext();
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        g_window = nullptr;
     }
 
     // --- Step 8: Shutdown ---
