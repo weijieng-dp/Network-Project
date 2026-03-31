@@ -50,7 +50,7 @@ public:
     void InitBots();
     void InitMarketMaker();
 
-    std::array<Order,2> MarketMakerStrategy(Bot& bot, double const& bestbid, double const& bestask);
+    std::array<Order,2> MarketMakerStrategy(Bot& bot);
     void MomentumStrategy(Bot& bot, std::function<void(Order&, OrderBook&)> matchingfunction);
     void TrendFollowingStrategy(Bot& bot,
         std::function<void(Order&, OrderBook&)> matchingfunction);

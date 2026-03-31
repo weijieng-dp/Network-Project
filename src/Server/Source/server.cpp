@@ -1,89 +1,3 @@
-/* Start Header
-*****************************************************************/
-/*!
-\file    server.cpp
-\author  weixuan.toh@digipen.edu
-\date    20 Mar 2026
-\brief
-  Exchange server for CSD2161 Assignment 5 - Online Trading Platform (Option 3).
-
-  Transport design (satisfies both rubric grading criteria):
-    TCP  - All client<->server control messages: login, logout, place/cancel
-           order, query market, query account, query orders, query trades.
-           TCP provides reliable ordered delivery and stream framing; partial
-           reads are handled by recvExact() exactly as in Assignment 4.
-    UDP  - Server-initiated market data BROADCASTS sent to all subscribed
-           clients after every trade execution (best bid/ask, last price,
-           volume). UDP is intentionally unreliable here — stale market
-           data is less harmful than a blocked TCP stream, and we
-           demonstrate handling of loss/dup/out-of-order as required.
-
-  -----------------------------------------------------------------------
-  Architecture
-  -----------------------------------------------------------------------
-  Thread model (pre-threading, same pattern as Assignment 4 TaskQueue):
-    ListenerThread   - accept() loop; hands each TCP socket to a worker.
-    WorkerThread(N)  - one per connected client; runs clientSession().
-                       Handles all TCP I/O for that client.
-    UdpBroadcast     - background thread: drains Global::broadcastQueue and
-                       sendto() each market-data datagram to all registered
-                       client UDP addresses.
-    PersistThread    - flushes accounts.dat + trades.dat every 5 seconds
-                       and on clean shutdown.
-    ExchangeMutex    - single std::mutex (Global::exMtx) protects the order book,
-                       account map, and trade log.  Worker threads contend on
-                       this when placing orders; contention is brief.
-
-  -----------------------------------------------------------------------
-  TCP message framing (network byte order throughout)
-  -----------------------------------------------------------------------
-  Every message starts with:   CmdID(1) + PayloadLen(2)
-  The receiver calls recvExact(PayloadLen) after reading the header.
-  This handles TCP stream segmentation / partial reads correctly.
-
-  CLIENT -> SERVER (CmdID values)
-    0x01  LOGIN          UsernameLen(1) Username(var)
-    0x02  LOGOUT         (no payload)
-    0x03  PLACE_ORDER    Side(1)[0=Buy,1=Sell] SymLen(1) Sym Qty(4) Price(8)
-    0x04  CANCEL_ORDER   OrderID(8)
-    0x05  QUERY_MARKET   SymLen(1) Sym
-    0x06  QUERY_ACCOUNT  (no payload)
-    0x07  QUERY_ORDERS   (no payload)
-    0x08  QUERY_TRADES   (no payload)
-    0x09  SUB_MARKET     ClientUdpPort(2)   [subscribe to UDP market data]
-
-  SERVER -> CLIENT (CmdID values)
-    0x81  LOGIN_OK       Cash(8) NumH(2) [SymLen(1) Sym Qty(4)]*N
-    0x82  LOGIN_FAIL     ReasonLen(1) Reason
-    0x83  ORDER_ACK      OrderID(8) Side(1) SymLen(1) Sym Qty(4) Price(8)
-    0x84  ORDER_REJECT   ReasonLen(1) Reason
-    0x85  TRADE_EXEC     OrderID(8) FilledQty(4) Price(8) RemQty(4)
-                         SymLen(1) Sym
-    0x86  CANCEL_ACK     OrderID(8)
-    0x87  CANCEL_REJECT  ReasonLen(1) Reason
-    0x88  MARKET_DATA    SymLen(1) Sym BestBid(8) BidQty(4) BestAsk(8)
-                         AskQty(4) LastPrice(8) Volume(4)
-                         (also broadcast over UDP to subscribers)
-    0x89  ACCOUNT_DATA   Cash(8) NumH(2) [SymLen(1) Sym Qty(4)]*N
-    0x8A  SERVER_MSG     MsgLen(2) Msg
-    0x8B  LOGOUT_OK      (no payload)
-    0x8C  ORDER_LIST     NumOrders(2)
-                         [OrderID(8) Side(1) SymLen(1) Sym Qty(4) Price(8)]*N
-    0x8D  TRADE_LIST     NumTrades(2)
-                         [TradeID(8) SymLen(1) Sym Qty(4) Price(8)
-                          Side(1)[0=bought] DateLen(1) Date]*N
-
-  UDP BROADCAST (server -> all subscribers, best-effort)
-    0x88  MARKET_DATA    (same payload as TCP MARKET_DATA above)
-    Sequence(4) prepended so clients can detect out-of-order datagrams.
-
-Copyright (C) 2026 DigiPen Institute of Technology.
-Reproduction or disclosure of this file or its contents without the
-prior written consent of DigiPen Institute of Technology is prohibited.
-*/
-/* End Header
-*******************************************************************/
-
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -148,18 +62,6 @@ static std::string hashPassword(const std::string& user, const std::string& pass
     std::ostringstream ss;
     ss << std::hex << std::setfill('0') << std::setw(16) << hash;
     return ss.str();
-}
-
-/*--------------------------------------------------------------------------
- * Broadcast server message to ALL connected clients
- *--------------------------------------------------------------------------*/
-static void broadcastServerMsg(const std::string& msg) {
-    std::lock_guard<std::mutex> lk(Global::userSockMtx);
-    for (auto& [uname, sock] : Global::userSockets) {
-        sendServerMsg(sock, msg);
-    }
-    std::lock_guard<std::mutex> plk(Global::printMtx);
-    std::cout << "[BROADCAST] " << msg << "\n";
 }
 
 
@@ -264,14 +166,13 @@ static void recordTrade(const std::string& sym, uint32_t fill, double fillPx,
     book_ref.lastPrice = fillPx; book_ref.volume += fill;
     book_ref.tradeLog.push_back({ fillPx, fill, tr.datetime, std::chrono::steady_clock::now() });
 
-    // Update buyer — cash was ALREADY reserved at limitPrice on order placement.
+    // Update buyer - cash was ALREADY reserved at limitPrice on order placement.
     // Refund the price improvement: (limitPrice - fillPx) * fill.
     // Do NOT deduct cash again.
     auto& ba = Global::accounts[buyOrd.username];
     ba.cash += (buyOrd.price - fillPx) * fill;   // refund price improvement
     // Update average cost basis (weighted average)
     uint32_t oldQty = ba.holdings.count(sym) ? ba.holdings[sym] : 0;
-    double oldAvgCost{ ba.avgCost.count(sym) ? ba.avgCost[sym] : 0.0 };
     double oldTotalCost{ ba.totalCost.count(sym) ? ba.totalCost[sym] : 0.0 };
 
     if (oldQty > 0) {
@@ -291,7 +192,7 @@ static void recordTrade(const std::string& sym, uint32_t fill, double fillPx,
         if (ba.openOrders[buyOrd.orderId].qty == 0) ba.openOrders.erase(buyOrd.orderId);
     }
 
-    // Update seller — shares were ALREADY reserved on order placement.
+    // Update seller - shares were ALREADY reserved on order placement.
     // Do NOT deduct holdings again. Just credit cash from the sale.
     auto& sa = Global::accounts[sellOrd.username];
 
@@ -381,8 +282,7 @@ static void checkConditionalOrders(const std::string& sym) {
         acc.openOrders[oid] = sord;
 
         matchOrders(sord, book);
-        /***************************************************************put market maker logic here****************************************************************/
- 
+        
 
         if (sord.qty > 0) {
             acc.holdings[sym] += sord.qty;
@@ -499,7 +399,7 @@ static void matchOrders(Order& ord, OrderBook& book) {
  * Price movement comes naturally: each buy at the ask nudges the DMM's
  * midpoint up; each sell at the bid nudges it down.  A per-symbol
  * "sentiment" value oscillates slowly (sine + noise) so prices trend
- * for a while then reverse — mimicking real market behavior.
+ * for a while then reverse - mimicking real market behavior.
  */
 static void simulationThread() {
 
@@ -533,7 +433,7 @@ struct OHLCCandle { double open, high, low, close; uint32_t vol; std::string lab
 static std::vector<OHLCCandle> buildCandles(const std::vector<TradePoint>& log) {
     if (log.empty()) return {};
     // Group by 15-second buckets for fast chart population with many candles
-    // datetime format: "YYYY-MM-DD_HH:MM:SS"
+
     std::vector<OHLCCandle> buckets;
     std::string curKey;
     for (auto& tp : log) {
@@ -655,9 +555,6 @@ static void clientSession(SOCKET sock) {
             std::lock_guard<std::mutex> lk(Global::dhMutex);
             auto& session = Global::dhSessions[sock];
 
-            // Log server's keys before computation
-            uint64_t serverPublicKeyBefore = session.dh.getPublicKey();
-
             // Compute shared secret using client's public key
             session.dh.computeSharedSecret(clientPublicKey);
             uint64_t sharedSecret = session.dh.getSharedSecret();
@@ -761,8 +658,8 @@ static void clientSession(SOCKET sock) {
                 memcpy(encryptedPass.data(), payload.data() + o, encLen);
                 o += encLen;
                 std::cout << "encrypted pass: ";
-                for (uint8_t pass : encryptedPass)
-                    std::cout << (int)pass << " ";
+                for (uint8_t p : encryptedPass)
+                    std::cout << (int)p << " ";
                 std::cout << std::endl;
 
                 std::cout << "session key: ";
@@ -824,7 +721,7 @@ static void clientSession(SOCKET sock) {
                 std::lock_guard<std::mutex> lk(Global::exMtx);
                 std::string ph = hashPassword(user, pass);
                 if (!Global::accounts.count(user)) {
-                    // New account — register with this password
+                    // New account register with this password
                     Global::accounts[user].username = user;
                     Global::accounts[user].passwordHash = ph;
                     std::lock_guard<std::mutex> plk(Global::printMtx); std::cout << "[NEW] " << user << "\n";
@@ -912,8 +809,7 @@ static void clientSession(SOCKET sock) {
             }
             matchOrders(ord, Global::books[sym]);
             // Re-quote MM after matching (deferred to avoid iterator invalidation)
-        /***************************************************************put market maker logic here****************************************************************/
-
+     
             checkConditionalOrders(sym);
             // Resources stay reserved while order rests in the book.
             // The cancel handler refunds on cancellation; recordTrade handles fills.

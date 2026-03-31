@@ -342,7 +342,7 @@ void Display::Draw() {
                     close = tp.price;
                 }
 
-                plotMap[log.first].dates.push_back(plotMap[log.first].dates.size());
+                plotMap[log.first].dates.push_back(static_cast<double>(plotMap[log.first].dates.size()));
                 plotMap[log.first].opens.push_back(open);
                 plotMap[log.first].highs.push_back(high);
                 plotMap[log.first].lows.push_back(low);

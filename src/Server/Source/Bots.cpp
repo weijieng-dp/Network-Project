@@ -24,7 +24,7 @@ void Bot::InitBot(std::string botName, Strategy strategy)
 	std::uniform_int_distribution<int> dist(1, StrategyCount - 3);
 	std::uniform_real_distribution<float> reaction(0.2f, 1.2f);
 	std::uniform_int_distribution<int> hold(50, 200);
-	std::uniform_int_distribution<int> sym(0, Global::SYMBOLS.size() - 1);
+	std::uniform_int_distribution<int> sym(0, static_cast<int>(Global::SYMBOLS.size()) - 1);
 	std::uniform_real_distribution<float> cd(0.2f, 1.2f);
 	std::uniform_real_distribution<float> mw(0.2f, 1.0f);
 	std::uniform_real_distribution<float> mrw(0.2f, 1.0f);
@@ -171,7 +171,7 @@ void BotManager::InitMarketMaker()
 }
 
 
-std::array<Order, 2> BotManager::MarketMakerStrategy(Bot& bot, double const& bestbid, double const& bestask)
+std::array<Order, 2> BotManager::MarketMakerStrategy(Bot& bot)
 {
 	double midprice = bot.lastPriceSeen;
 
@@ -179,8 +179,6 @@ std::array<Order, 2> BotManager::MarketMakerStrategy(Bot& bot, double const& bes
 
 	double bidPrice = midprice - spread * 0.5;
 	double askPrice = midprice + spread * 0.5;
-
-	auto& acc = Global::accounts[bot.botname];
 
 	double targetInventory = 100.0;
 	double inventoryError = Global::accounts[bot.botname].holdings[bot.Symbol] - targetInventory;
@@ -377,12 +375,12 @@ void BotManager::TrendFollowingStrategy(Bot& bot,
 	if ((int)log.size() < SLOW) return;
 
 	double fastMA = 0.0;
-	for (int i = log.size() - FAST; i < log.size(); i++)
+	for (int i{ static_cast<int>(log.size()) - FAST }; i < log.size(); i++)
 		fastMA += log[i].price;
 	fastMA /= FAST;
 
 	double slowMA = 0.0;
-	for (int i = log.size() - SLOW; i < log.size(); i++)
+	for (int i{ static_cast<int>(log.size()) - SLOW }; i < log.size(); i++)
 		slowMA += log[i].price;
 	slowMA /= SLOW;
 
@@ -459,7 +457,7 @@ void BotManager::MeanReversionStrategy(Bot& bot,
 
 	if (Log.size() < MeanWindow) return;
 
-	for (int i = Log.size() - MeanWindow; i < Log.size(); i++)
+	for (int i{ static_cast<int>(Log.size()) - MeanWindow }; i < Log.size(); i++)
 	{
 		Mean += Log[i].price;
 
@@ -473,7 +471,7 @@ void BotManager::MeanReversionStrategy(Bot& bot,
 	// Always update reference so it doesn't get permanently stale
 	double standardDeviation = 0.0;
 
-	for (int i = Log.size() - MeanWindow; i < Log.size(); i++)
+	for (int i{ static_cast<int>(Log.size()) - MeanWindow }; i < Log.size(); i++)
 	{
 		double diff = Log[i].price - Mean;
 		standardDeviation += diff * diff;
@@ -553,7 +551,6 @@ void BotManager::NoiseTradingStrategy(
 	int roll = rollc(rng);
 	if (roll >= 25) return; // 25% chance to trade this tick
 
-	double bestBid = book.bids.begin()->first;
 	double bestAsk = book.asks.begin()->first;
 
 	Order ord;
@@ -646,7 +643,7 @@ void BotManager::HerdBehaviorStrategy(Bot& bot,
 	double buyPressure = 0.0;
 	double sellPressure = 0.0;
 
-	for (int i = Log.size() - window + 1; i < Log.size(); i++)
+	for (int i{ static_cast<int>(Log.size()) - window + 1 }; i < Log.size(); i++)
 	{
 		if (Log[i].price > Log[i - 1].price)
 			buyPressure += Log[i].qty;
@@ -723,7 +720,6 @@ void BotManager::PanicSellingStrategy(
 
 	double bestBid = book.bids.begin()->first;
 
-	double panicFactor = 0.08 + (rng() % 5) * 0.01;
 	double price = bestBid * (1.0 - 0.1);
 
 	uint32_t holdings = house.holdings[bot.Symbol];
@@ -825,8 +821,6 @@ void BotManager::ProcessStrategies(std::function<void(Order& ord, OrderBook& boo
 
 		for (int i = 0; i < TotalBots; i++)
 		{
-			auto& book = Global::books[bots[i].Symbol];
-			Account& house = Global::accounts[bots[i].botname];
 
 			CancelOrder(bots[i]);
 
@@ -886,26 +880,17 @@ void BotManager::ProcessMarketMaker(std::function<void(Order& ord, OrderBook& bo
 {
 	for (int i = 0; i < 5; i++)
 	{
-		auto& book = Global::books[MarketMakers[i].Symbol];
-		Account& house = Global::accounts[MarketMakers[i].botname];
 
 		CancelOrder(MarketMakers[i]);
 
-
-		static std::mt19937 rng(std::random_device{}());
 		std::normal_distribution<double> noise(0.0, 0.001);
-		MarketMakers[i].lastPriceSeen *= (1.0 + noise(rng)); // ← correct
+		MarketMakers[i].lastPriceSeen *= (1.0 + noise(rng)); // correct
 
-
-		double bid = book.bids.empty() ? 0.0 : book.bids.begin()->first;
-		double ask = book.asks.empty() ? 0.0 : book.asks.begin()->first;
-
-
-		std::array<Order, 2> orders = MarketMakerStrategy(MarketMakers[i], bid, ask);
+		std::array<Order, 2> orders = MarketMakerStrategy(MarketMakers[i]);
 		if (CrisisManager::getState() == CrisisManager::PANIC || CrisisManager::getState() == CrisisManager::SHOCK)
 		{
-			orders[0].qty *= 0.2; // weak bids
-			orders[1].qty *= 0.5;
+			orders[0].qty = static_cast<uint32_t>(orders[0].qty * 0.2); // weak bids
+			orders[1].qty = static_cast<uint32_t>(orders[1].qty * 0.5);
 
 			orders[0].price *= 0.95; // lower bid
 			orders[1].price *= 1.05;
