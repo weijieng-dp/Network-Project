@@ -1,5 +1,5 @@
 ===========================================================
-Project Guide - YourProjectName
+Project Guide - 
 ===========================================================
 
 This guide explains how to install CMake on a target machine and 
@@ -45,3 +45,10 @@ Run the provided "run.bat" script. It will automatically:
 
 Usage:
    double-click run.bat
+
+
+===Locate The Release build===
+the Release build for both client and server is located at 
+-build/src/Server/Release 
+-build/src/Client/Release 
+
