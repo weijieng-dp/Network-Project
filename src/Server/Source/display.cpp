@@ -311,7 +311,7 @@ void Display::Draw() {
         static std::unordered_map<std::string, plotData>                plotMap;        // Map of SYMBOL to the extracted plot data
 
         // Update the values once every 5s
-        if (time >= 5.) {
+        if (time >= 1.) {
             time = 0;
 
             // Making a copy of the trade logs to not "hog" the mutex.
@@ -327,8 +327,6 @@ void Display::Draw() {
             for (const auto& log :newLog) {
                 if (log.second.empty()) continue;
 
-                std::vector<double> dates;  dates.reserve(log.second.size());
-
                 double high, low, close;
                 double open = -1.f;
                 for (const TradePoint& tp : log.second) {
@@ -340,12 +338,10 @@ void Display::Draw() {
                     low = std::min(open, tp.price);
                     close = tp.price;
 
-                    dates.push_back(static_cast<double>((tp.chronoTimePoint).time_since_epoch().count()) / 1000000000);
                 }
 
-                double a_dates = std::accumulate(dates.begin(), dates.end(), 0.0) / dates.size();
 
-                plotMap[log.first].dates.push_back(a_dates);
+                plotMap[log.first].dates.push_back(plotMap[log.first].dates.size());
                 plotMap[log.first].opens.push_back(open);
                 plotMap[log.first].highs.push_back(high);
                 plotMap[log.first].lows.push_back(low);
@@ -356,11 +352,11 @@ void Display::Draw() {
 
         for (const auto& log : plotMap) {
             if (log.second.dates.empty()) continue;
-
+            if (log.first != "GOOGL") continue;
 
             if (ImPlot::BeginPlot(log.first.c_str())) {
 
-                bool tooltip{ true };
+                //bool tooltip{ true };
 
                 double minTime = *std::min_element(log.second.dates.begin(), log.second.dates.end());
                 double maxTime = *std::max_element(log.second.dates.begin(), log.second.dates.end());
@@ -368,8 +364,8 @@ void Display::Draw() {
                 ImPlot::SetupAxisScale(ImAxis_X1, ImPlotScale_Time);
                 ImPlot::SetupAxisFormat(ImAxis_Y1, "$%.0f");
                 ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, minTime,maxTime);
-                MyImPlot::PlotCandlestick(log.first.c_str(), log.second.dates.data(), log.second.opens.data(), log.second.closes.data(), 
-                                          log.second.lows.data(), log.second.highs.data(), log.second.dates.size(), tooltip, 0.25f, bullCol, bearCol);
+                MyImPlot::PlotCandlestick(log.second.dates.data(), log.second.opens.data(), log.second.closes.data(), 
+                                          log.second.lows.data(), log.second.highs.data(), log.second.dates.size());
                 ImPlot::EndPlot();
 
             }

@@ -45,5 +45,5 @@ namespace MyImPlot {
     *   \param bearCol          : color of bear candles
     * 
     /----------------------------------------------------------------------------------------------------*/
-    void PlotCandlestick(const char* label_id, const double* xs, const double* opens, const double* closes, const double* lows, const double* highs, int count, bool tooltip, float width_percent, ImVec4 bullCol, ImVec4 bearCol);
+    void PlotCandlestick(const double* xs, const double* opens, const double* closes, const double* lows, const double* highs, int count, float width_pct = 0.6f);
 }
