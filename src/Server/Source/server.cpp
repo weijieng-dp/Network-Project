@@ -271,8 +271,19 @@ static void recordTrade(const std::string& sym, uint32_t fill, double fillPx,
     ba.cash += (buyOrd.price - fillPx) * fill;   // refund price improvement
     // Update average cost basis (weighted average)
     uint32_t oldQty = ba.holdings.count(sym) ? ba.holdings[sym] : 0;
-    double oldAvgCost = ba.avgCost.count(sym) ? ba.avgCost[sym] : 0;
-    ba.avgCost[sym] = (oldQty > 0) ? (oldAvgCost * oldQty + fillPx * fill) / (oldQty + fill) : fillPx;
+    double oldAvgCost{ ba.avgCost.count(sym) ? ba.avgCost[sym] : 0.0 };
+    double oldTotalCost{ ba.totalCost.count(sym) ? ba.totalCost[sym] : 0.0 };
+
+    if (oldQty > 0) {
+        double newTotalCost{ oldTotalCost + (fillPx * fill) };
+        ba.avgCost[sym] = newTotalCost / (oldQty + fill);
+        ba.totalCost[sym] = newTotalCost;
+    }
+    else {
+        ba.avgCost[sym] = fillPx;
+        ba.totalCost[sym] = fillPx * fill;
+    }
+
     ba.holdings[sym] += fill;
     ba.trades.push_back(tr);
     if (ba.openOrders.count(buyOrd.orderId)) {
@@ -283,6 +294,23 @@ static void recordTrade(const std::string& sym, uint32_t fill, double fillPx,
     // Update seller — shares were ALREADY reserved on order placement.
     // Do NOT deduct holdings again. Just credit cash from the sale.
     auto& sa = Global::accounts[sellOrd.username];
+
+    // Seller P&L
+    double costBasisForSold{};
+    if (sa.avgCost.count(sym) && sa.avgCost[sym] > 0.0) costBasisForSold = sa.avgCost[sym];
+
+    double realizedPL{ (fillPx - costBasisForSold) * fill };
+    if (sa.realizedPL.count(sym)) sa.realizedPL[sym] += realizedPL;
+    else sa.realizedPL[sym] = realizedPL;
+
+    uint32_t remainingQty{ sa.holdings.count(sym) ? sa.holdings[sym] : 0 };
+    if (remainingQty > 0 && sa.totalCost.count(sym)) sa.totalCost[sym] = sa.avgCost[sym] * remainingQty;
+    else if (sa.holdings[sym] == 0) {
+        sa.avgCost.erase(sym);
+        sa.totalCost.erase(sym);
+    }
+    // End of Sell P&L
+
     sa.cash += fillPx * fill;
     sa.trades.push_back(tr);
     if (sa.openOrders.count(sellOrd.orderId)) {
@@ -936,7 +964,20 @@ static void clientSession(SOCKET sock) {
             std::lock_guard<std::mutex> lk(Global::exMtx);
             Account& acc = Global::accounts[username];
             std::vector<char> p; pushDouble(p, acc.cash); pushU16(p, (uint16_t)acc.holdings.size());
-            for (auto& [sym, qty] : acc.holdings) { pushStr1(p, sym); pushU32(p, qty); }
+            for (auto& [sym, qty] : acc.holdings) {
+                pushStr1(p, sym); pushU32(p, qty);
+
+                // Send P&L data
+                double avgCost = acc.avgCost.count(sym) ? acc.avgCost[sym] : 0;
+                double currentPrice = Global::books.count(sym) ? Global::books[sym].lastPrice : 0;
+                double unrealizedPL = (currentPrice - avgCost) * qty;
+                double pnlPercent = (avgCost > 0) ? (unrealizedPL / (avgCost * qty) * 100.0) : 0;
+
+                pushDouble(p, avgCost);
+                pushDouble(p, currentPrice);
+                pushDouble(p, unrealizedPL);
+                pushDouble(p, pnlPercent);
+            }
             sendFrame(sock, CMD_ACCOUNT_DATA, p);
             break;
         }
@@ -1188,17 +1229,14 @@ static void persistThread() {
  *--------------------------------------------------------------------------*/
 
 int main() {
-
-    // Read from a config file
-    // Read from persistent data file
-    loadPersistentData();
-
     // Initialize IMGUI
     Display::Init();
     Display::InitPorts();
 
     // Initialize managers from config + persistent data
-
+    // Read from a config file
+    // Read from persistent data file
+    loadPersistentData();
 
     // Initialize WINSOCK
     WSADATA wsaData{};

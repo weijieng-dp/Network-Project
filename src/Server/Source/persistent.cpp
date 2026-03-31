@@ -5,11 +5,13 @@
 #include "utils.h"
 #include "crypto.h"
 
+#include <filesystem>
 /*--------------------------------------------------------------------------
  * Persistence
  *--------------------------------------------------------------------------*/
 
 void writePersistentData() {
+    if (!std::filesystem::exists(Global::persistPath)) std::filesystem::create_directories(Global::persistPath);
     std::vector<uint8_t> salt(16);
     std::random_device rd;
     for (auto& b : salt) b = static_cast<uint8_t>(rd());
@@ -26,12 +28,22 @@ void writePersistentData() {
         std::string accountsPlain;
         for (auto& [u, acc] : Global::accounts) {
             accountsPlain += "A " + u + " " + std::to_string(acc.cash) + " " + acc.passwordHash + "\n";
-            for (auto& [sym, qty] : acc.holdings) if (qty > 0) accountsPlain += "H " + sym + " " + std::to_string(qty) + "\n";
+            for (auto& [sym, qty] : acc.holdings) {
+                if (qty == 0) continue;
+                double avgCost{ acc.avgCost.count(sym) ? acc.avgCost[sym] : 0.0 },
+                    totalCost{ acc.totalCost.count(sym) ? acc.totalCost[sym] : 0.0 },
+                    realizedPL{ acc.realizedPL.count(sym) ? acc.realizedPL[sym] : 0.0 };
+                accountsPlain += "H " + sym + " " + std::to_string(qty) + " " + std::to_string(avgCost)
+                    + " " + std::to_string(totalCost) + " " + std::to_string(realizedPL) + "\n";
+            }
         }
         std::vector<uint8_t> encryptedAcc{ cipher.encrypt(std::vector<uint8_t>(accountsPlain.begin(), accountsPlain.end()), accountsAad) };
-        std::ofstream fa(Global::persistPath + "\\accounts.dat", std::ios::binary | std::ios::trunc);
-        fa.write(reinterpret_cast<char*>(salt.data()), salt.size());
-        fa.write(reinterpret_cast<char*>(encryptedAcc.data()), encryptedAcc.size());
+        std::ofstream fa(Global::persistPath + "\\accounts.dat", std::ios::binary | std::ios::trunc | std::ios::out);
+        if (fa) {
+            fa.write(reinterpret_cast<char*>(salt.data()), salt.size());
+            fa.write(reinterpret_cast<char*>(encryptedAcc.data()), encryptedAcc.size());
+        }
+        fa.close();
 
         // --- trades.dat: trade log ---
         std::vector<uint8_t> tradesAad{ 't', 'r', 'a', 'd', 'e', 's', '.', 'd', 'a', 't' };
@@ -54,8 +66,11 @@ void writePersistentData() {
         }
         std::vector<uint8_t> encryptedOrders{ cipher.encrypt(std::vector<uint8_t>(ordersPlain.begin(), ordersPlain.end()), ordersAad) };
         std::ofstream fo(Global::persistPath + "\\orders.dat", std::ios::binary | std::ios::trunc);
-        fo.write(reinterpret_cast<char*>(salt.data()), salt.size());
-        fo.write(reinterpret_cast<char*>(encryptedOrders.data()), encryptedOrders.size());
+        if (fo) {
+            fo.write(reinterpret_cast<char*>(salt.data()), salt.size());
+            fo.write(reinterpret_cast<char*>(encryptedOrders.data()), encryptedOrders.size());
+        }
+        fo.close();
 
         // --- history.dat: price history for charting ---
         std::vector<uint8_t> historyAad{ 'h', 'i', 's', 't', 'o', 'r', 'y', '.', 'd', 'a', 't' };
@@ -67,9 +82,11 @@ void writePersistentData() {
         }
         std::vector<uint8_t> encryptedHistory{ cipher.encrypt(std::vector<uint8_t>(historyPlain.begin(), historyPlain.end()), historyAad) };
         std::ofstream fh(Global::persistPath + "\\history.dat", std::ios::binary | std::ios::trunc);
-        fh.write(reinterpret_cast<char*>(salt.data()), salt.size());
-        fh.write(reinterpret_cast<char*>(encryptedHistory.data()), encryptedHistory.size());
-
+        if (fh) {
+            fh.write(reinterpret_cast<char*>(salt.data()), salt.size());
+            fh.write(reinterpret_cast<char*>(encryptedHistory.data()), encryptedHistory.size());
+        }
+        fh.close();
 
         logMsg = "[" + nowString() + "] Persisted " + std::to_string(Global::accounts.size()) + " accounts, "
             + std::to_string(Global::allTrades.size()) + " trades, "
@@ -118,10 +135,14 @@ void loadPersistentData() {
             else if (tag == 'H' && !curUser.empty()) { 
                 std::string sym; 
                 uint32_t qty; 
+                double avgCost{}, totalCost{}, realizedPL{};
                 
-                ls >> sym >> qty; 
+                ls >> sym >> qty >> avgCost >> totalCost >> realizedPL;
                 
-                Global::accounts[curUser].holdings[sym] = qty; 
+                Global::accounts[curUser].holdings[sym] = qty;
+                Global::accounts[curUser].avgCost[sym] = avgCost;
+                Global::accounts[curUser].totalCost[sym] = totalCost;
+                Global::accounts[curUser].realizedPL[sym] = realizedPL;
             }
         }
         std::cout << "Loaded " << Global::accounts.size() << " accounts.\n";

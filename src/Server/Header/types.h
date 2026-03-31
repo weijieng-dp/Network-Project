@@ -50,6 +50,8 @@ struct Account {
     double                          cash = 100000.0;
     std::map<std::string, uint32_t> holdings;
     std::map<std::string, double>   avgCost;        // average cost basis per symbol
+    std::map<std::string, double>   totalCost;      // total cost for position (for P&L calculations)
+    std::map<std::string, double>   realizedPL;     // Realised P&L per symbol
     std::vector<Trade>              trades;
     std::map<uint64_t, Order>       openOrders;
 };

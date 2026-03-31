@@ -231,7 +231,7 @@ void Display::InitPorts() {
                     udpPort > 0 && udpPort < 65536) {
                     Global::udpPort = static_cast<uint16_t>(udpPort);
                     Global::tcpPort = static_cast<uint16_t>(tcpPort);
-                    Global::persistPath = buf;
+                    Global::persistPath = buf.c_str();
                 }
             }
 

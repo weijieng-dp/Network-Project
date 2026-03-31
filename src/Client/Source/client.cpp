@@ -107,7 +107,10 @@ static SOCKET      g_udpSocket  = INVALID_SOCKET;
 static bool                             g_loggedIn = false;
 static std::string                      g_username;
 static double                           g_cash     = 0.0;
-static std::map<std::string,uint32_t>   g_holdings;
+static std::map<std::string, uint32_t>  g_holdings;
+static std::map<std::string, double>    g_avgCost;
+static std::map<std::string, double>    g_unrealizedPL;
+static std::map<std::string, double>    g_pnlPercent;
 
 // Local order / trade cache
 struct LocalOrder { 
@@ -161,6 +164,10 @@ static std::mutex g_dhMutex;
 
 // GLFW window reference for background threads to signal close
 static GLFWwindow* g_window = nullptr;
+
+// For refreshing account
+static std::chrono::steady_clock::time_point g_lastAccountRefresh;
+static const std::chrono::seconds g_accountRefreshInterval{ 5 };
 
 /*--------------------------------------------------------------------------
  * TUI helpers
@@ -282,10 +289,29 @@ static void parseMarketData(const char* b, int n, int o) {
 }
 
 static void onAccountData(const char* b, int n, int o) {
-    double cash=0; uint16_t nh=0;
+    double cash{}; uint16_t nh{};
     if(!readDouble(b,n,o,cash)||!readU16(b,n,o,nh)) return;
-    { std::lock_guard<std::mutex> lk(g_stateMtx); g_cash=cash; g_holdings.clear();
-      for(uint16_t i=0;i<nh;++i){ std::string sym; uint32_t qty; if(!readStr1(b,n,o,sym)||!readU32(b,n,o,qty))break; if(qty>0)g_holdings[sym]=qty; } }
+    { 
+        std::lock_guard<std::mutex> lk(g_stateMtx); 
+        g_cash = cash; g_holdings.clear(); g_avgCost.clear(); g_unrealizedPL.clear(); g_pnlPercent.clear();
+        for (uint16_t i{}; i < nh; ++i) { 
+            std::string sym; uint32_t qty; 
+            double avgCost{}, currPrice{}, unrealized{}, pnlPct{};
+            if (!readStr1(b, n, o, sym) || !readU32(b, n, o, qty))break; 
+            
+            if (readDouble(b, n, o, avgCost) && readDouble(b, n, o, currPrice) &&
+                readDouble(b, n, o, unrealized) && readDouble(b, n, o, pnlPct)) {
+                if (qty > 0) {
+                    g_holdings[sym] = qty;
+                    g_avgCost[sym] = avgCost;
+                    g_unrealizedPL[sym] = unrealized;
+                    g_pnlPercent[sym] = pnlPct;
+                }
+            }
+            else if (qty > 0) g_holdings[sym] = qty;
+        }
+            
+    }
     refreshUI();
 }
 
@@ -421,10 +447,7 @@ static void tcpReceiveThread() {
             }
             double cash=0; readDouble(b,n,o,cash);
             totalValue += cash;
-            oss.imbue(std::locale("en_SG.UTF-8"));
-            oss << "Cash: " << std::showbase << std::put_money(cash * 100)
-                << " | Total Value: " << std::showbase << std::put_money(totalValue * 100);
-            //oss << "  Cash: $" << cash << "  |  Total Value: ";// << totalValue;
+            oss << "  Cash: $" << cash << "  |  Total Value: " << totalValue;
             logMsg(oss.str());
             break;
         }
@@ -878,13 +901,95 @@ static void drawAccountPanel() {
         ImGui::TextDisabled("Not logged in");
         ImGui::TextDisabled("/login <user> <pass>");
     } else {
+        auto fmtPercent = [](double v) -> std::string {
+            std::ostringstream ss;
+            ss << std::fixed << std::setprecision(2) << v;
+            return ss.str();
+        };
         ImGui::TextColored(ImVec4(0,1,1,1), "ACCOUNT: %s", g_username.c_str());
         ImGui::Separator();
         ImGui::TextColored(ImVec4(0,1,0,1), "Cash: %s", fmtMoney(g_cash).c_str());
         if (!g_holdings.empty()) {
-            ImGui::Text("Holdings:");
-            for (auto& [sym, qty] : g_holdings)
-                ImGui::BulletText("%s x%u", sym.c_str(), qty);
+            double totalUnrealized{}, totalPortfolio{ g_cash };
+            ImGui::Separator();
+            ImGui::TextColored(ImVec4(1.f, 1.f, 0.f, 1.f), "Holdings");
+            if (ImGui::BeginTable("HoldingsTable", 6, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) {
+                ImGui::TableSetupColumn("Symbol", ImGuiTableColumnFlags_WidthFixed, 70.0f);
+                ImGui::TableSetupColumn("Qty", ImGuiTableColumnFlags_WidthFixed, 60.0f);
+                ImGui::TableSetupColumn("Avg Cost", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+                ImGui::TableSetupColumn("Current", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+                ImGui::TableSetupColumn("P&L", ImGuiTableColumnFlags_WidthFixed, 100.0f);
+                ImGui::TableSetupColumn("%", ImGuiTableColumnFlags_WidthFixed, 70.0f);
+
+                ImGui::TableHeadersRow();
+   
+                for (auto& [sym, qty] : g_holdings) {
+                    if (qty == 0) continue;
+
+                    double avgCost{ g_avgCost.count(sym) ? g_avgCost[sym] : 0.0 },
+                        unrealizedPL{ g_unrealizedPL.count(sym) ? g_unrealizedPL[sym] : 0.0 },
+                        pnlPercent{ g_pnlPercent.count(sym) ? g_pnlPercent[sym] : 0.0 };
+
+                    double currPrice{};
+                    {
+                        std::lock_guard<std::mutex> mktlk(g_mktMtx);
+                        auto mktIt{ g_marketData.find(sym) };
+                        if (mktIt != g_marketData.end()) currPrice = mktIt->second.last;
+                    }
+                        
+
+                    double positionVal{ currPrice * qty };
+                    totalPortfolio += positionVal;
+                    totalUnrealized += unrealizedPL;
+
+                    ImVec4 pnlColor{ (unrealizedPL >= 0.0) ? ImVec4(0.0f, 1.0f, 0.0f, 1.0f) : ImVec4(1.0f, 0.0f, 0.0f, 1.0f) };
+                    std::string pnlPercentStr{ (pnlPercent >= 0.0 ? "+" : "") + fmtPercent(pnlPercent) + "%" },
+                        plStr{ (unrealizedPL >= 0 ? "+" : "") + fmtMoney(std::abs(unrealizedPL)) };
+
+                    ImGui::TableNextRow();
+
+                    ImGui::TableSetColumnIndex(0);
+                    ImGui::Text("%s", sym.c_str());
+
+                    ImGui::TableSetColumnIndex(1);
+                    ImGui::Text("%u", qty);
+
+                    ImGui::TableSetColumnIndex(2);
+                    ImGui::Text("%s", fmtMoney(avgCost).c_str());
+
+                    ImGui::TableSetColumnIndex(3);
+                    ImGui::Text("%s", fmtMoney(currPrice).c_str());
+
+                    ImGui::TableSetColumnIndex(4);
+                    ImGui::TextColored(pnlColor, "%s", plStr.c_str());
+
+                    ImGui::TableSetColumnIndex(5);
+                    ImGui::TextColored(pnlColor, "%s", pnlPercentStr.c_str());
+                }
+                ImGui::EndTable();
+            }
+            ImGui::Separator();
+
+            // Summary row (Portfolio Value and Unrealized P&L side by side)
+            float windowWidth = ImGui::GetWindowWidth();
+            float halfWidth = (windowWidth - 30.0f) * 0.5f;
+
+            // Portfolio Value
+            ImGui::SetCursorPosX(10.0f);
+            ImGui::Text("Portfolio Value:");
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "%s", fmtMoney(totalPortfolio).c_str());
+
+            // Unrealized P&L (position to the right)
+            float plPosX = 10.0f + halfWidth;
+            if (plPosX < windowWidth - 100.0f) {
+                ImGui::SetCursorPosX(plPosX);
+                ImGui::Text("Unrealized P&L:");
+                ImGui::SameLine();
+                ImVec4 plColor = (totalUnrealized >= 0.0) ? ImVec4(0.0f, 1.0f, 0.0f, 1.0f) : ImVec4(1.0f, 0.0f, 0.0f, 1.0f);
+                ImGui::TextColored(plColor, "%s", fmtMoney(totalUnrealized).c_str());
+            }
+            
         }
         if (!g_openOrders.empty()) {
             ImGui::Separator();
@@ -1015,9 +1120,19 @@ int main() {
         // Request initial market data for all symbols
         for (auto& sym : SYMBOLS) cmdQueryMarket(sym);
 
+        auto timer = [&] {
+            auto now{ std::chrono::steady_clock::now() };
+            if (g_loggedIn && now - g_lastAccountRefresh >= g_accountRefreshInterval) {
+                sendFrame(g_tcpSocket, CMD_QUERY_ACCOUNT, {});
+                g_lastAccountRefresh = now;
+            }
+        };
+
         // Main render loop
         while (!glfwWindowShouldClose(window) && g_running) {
             glfwPollEvents();
+
+            timer();
 
             // Mouse wheel zoom (when not over an ImGui scroll region)
             if (io.MouseWheel != 0 && !ImGui::IsAnyItemActive()) {
