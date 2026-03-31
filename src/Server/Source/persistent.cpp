@@ -11,7 +11,8 @@
  *--------------------------------------------------------------------------*/
 
 void writePersistentData() {
-    if (!std::filesystem::exists(Global::persistPath)) std::filesystem::create_directories(Global::persistPath);
+    std::error_code ec;
+    if (!std::filesystem::exists(Global::persistPath,ec)) std::filesystem::create_directories(Global::persistPath, ec);
     std::vector<uint8_t> salt(16);
     std::random_device rd;
     for (auto& b : salt) b = static_cast<uint8_t>(rd());
